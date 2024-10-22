@@ -6,11 +6,11 @@ editor_options:
 output: html_document
 params:
   debug:
-    input: bool
+    input: checkbox
     label: Debug Mode
     value: true
   prng_seed:
-    input: number
+    input: numeric
     label: Random Number Seed
     value: 2711
   date_of_valuation:
@@ -18,27 +18,35 @@ params:
     label: Date of Valuation
     value: "2024-09-30"
   reporting_path:
-    input: file
+    input: text
     label: Working directory for the monthly valuation process
     value: ""
   database_name:
-    input: file
+    input: text
     label: Database file containing monthly data
     value: ""
   treaty_positions:
-    input: file
+    input: text
     label: "Treaty Positions CSV file"
     value: ""
   development_factors:
-    input: file
+    input: text
     label: "Development Factors CSV file"
     value: ""
-  exceptions_table:
-    input: file
-    label: "Exceptions Table CSV file"
+  exceptions_extract_dates: 
+    input: text
+    label: "Specific Dates to Use in Source Data"
+    value: ""
+  exceptions_bad_reporting_months: 
+    input: text
+    label: "Specific Experience Months to Exclude from Source Data"
+    value: ""
+  overrides_table:  
+    input: text
+    label: "Specific Values to Override in Source Data"
     value: ""
   key_map:
-    input: file
+    input: text
     label: "Key Translations CSV file"
     value: ""
   source_data_table_name:
