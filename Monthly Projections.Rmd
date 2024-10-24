@@ -109,8 +109,7 @@ datareplace <- function(fallback, new_data) {
 
 # Return the number of months between two dates
 months_between <- function(EFF, CAL) {
-  num_months <- months(as.integer((year(CAL) - year(EFF)) * 12 + (month(CAL) - month(EFF))))
-  dplyr::if_else(day(CAL) == 1 & day(EFF) == as.integer(days_in_month(EFF)), num_months + months(1), num_months)
+  num_months <- months(as.integer((year(CAL) - year(EFF)) * 12 + (month(CAL) - month(EFF)) + ifelse(day(CAL + 1) == 1, 1, 0)))
   return(num_months)
 }
 
