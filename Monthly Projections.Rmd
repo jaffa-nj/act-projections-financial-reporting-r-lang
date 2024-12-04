@@ -33,15 +33,15 @@ params:
     input: text
     label: "Development Factors CSV file"
     value: ""
-  exceptions_extract_dates: 
+  exceptions_extract_dates:
     input: text
     label: "Specific Dates to Use in Source Data"
     value: ""
-  exceptions_bad_reporting_months: 
+  exceptions_bad_reporting_months:
     input: text
     label: "Specific Experience Months to Exclude from Source Data"
     value: ""
-  overrides_table:  
+  overrides_table:
     input: text
     label: "Specific Values to Override in Source Data"
     value: ""
@@ -114,9 +114,9 @@ months_between <- function(EFF, CAL) {
 }
 
 convert_numeric_to_period <- function(x, p) {
-  i = as.integer(x)
+  i <- as.integer(x)
   y <- period(0)
-  switch (p,
+  switch(p,
     "years" = {
       y <- y + years(i)
       y <- y + convert_numeric_to_period((x - i) * 12, "months")
@@ -424,7 +424,7 @@ proj.env$MonthlyProjections <- expand.grid(
     Treaty_Length = months_between(Effective_Date, Expiration_Date),
     Policy_Length = convert_numeric_to_period(Policy_Length, "months"),
     MaturityDateOfNewPolicies = as.Date(Month %m+% Policy_Length) - 1,
-    MonthsNewPolicyInforceAfterTreatyEnds =  months(ifelse(
+    MonthsNewPolicyInforceAfterTreatyEnds = months(ifelse(
       Month >= Effective_Date & Month <= Expiration_Date,
       pmax(as.numeric(months_between(Expiration_Date, MaturityDateOfNewPolicies), "months"), 0),
       0
@@ -455,7 +455,7 @@ This only applies to LOD treaties.
 Inherited_UEPR_Pattern <- function(EFF, CAL, PLEN) {
   k <- as.numeric(months_between(EFF, CAL), "months")
   # need to convert period back to integer form
-  PLEN = as.numeric(PLEN, "months")
+  PLEN <- as.numeric(PLEN, "months")
   dplyr::if_else(k >= 0 & k <= (PLEN - 1), (2 / PLEN) * (1 - (k + 0.5) / PLEN), 0)
   # {(12-(k+0.5)*(12/PLEN))/(6*PLEN)}
   # k+0.5 adjusts for the mid-month bind
@@ -502,7 +502,7 @@ The projection evenly distributes the estimated total written premium across the
 WrittenPattern <- function(EFF, CAL, TLEN) {
   treaty_month <- as.numeric(months_between(EFF, CAL), "months")
   # need to convert period back to integer form
-  TLEN = as.numeric(TLEN, "months")
+  TLEN <- as.numeric(TLEN, "months")
   dplyr::if_else(treaty_month >= 0 & treaty_month < TLEN, 1 / TLEN, 0)
 }
 
@@ -533,7 +533,7 @@ proj.env$MonthlyProjections <- proj.env$MonthlyProjections %>%
     # Amount of Written Premium that will be earned in next treaty (LOD only)
     WP_ToEarnNextTreaty = ifelse(
       RA_or_LOD == "LOD",
-      WP_Monthly * (as.numeric(MonthsNewPolicyInforceAfterTreatyEnds, "months") / as.numeric(Policy_Length, "months")), 
+      WP_Monthly * (as.numeric(MonthsNewPolicyInforceAfterTreatyEnds, "months") / as.numeric(Policy_Length, "months")),
       0
     )
   )
@@ -568,8 +568,8 @@ Two temporary tables are created to form and calculate the sumproduct of earned 
 # of policy length. The 1st month, however, splits half of its share with the month following the policy duration.
 EarnedPattern <- function(k, PLEN) {
   # need to convert period back to integer form
-  k = as.numeric(k, "months")
-  PLEN = as.numeric(PLEN, "months")
+  k <- as.numeric(k, "months")
+  PLEN <- as.numeric(PLEN, "months")
   case_when(
     (k >= 1 & k <= (PLEN - 1)) ~ 1 / PLEN,
     (k == 0 | k == PLEN) ~ 1 / (2 * PLEN),
@@ -622,7 +622,7 @@ proj.env$table2_Earning_Pattern <- left_join(
     EP_Month
   ) %>%
   summarize(EP_Monthly = sum(EP_Monthly))
-  # ungroup() # ungroup shouldn't be needed because summarize will have collapsed the rows by the group_by columns
+# ungroup() # ungroup shouldn't be needed because summarize will have collapsed the rows by the group_by columns
 
 # Join the earned premiums (EP_Monthly) to MonthlyProjections
 proj.env$MonthlyProjections <- proj.env$MonthlyProjections %>%
@@ -700,7 +700,7 @@ proj.env$t_Loss <- proj.env$MonthlyProjections %>%
   ) %>%
   # This is basically the same as using window functions in SQL
   # e.g. SUM(x) OVER (PARTITION BY y) in this case
-  group_by(Treaty) %>% 
+  group_by(Treaty) %>%
   mutate(Total_Earned_Partic = sum(EP_Monthly_Incl_IUEPR)) %>%
   ungroup()
 
@@ -782,23 +782,23 @@ This step calculates the dollar amounts for ULAE, reinsurance broker commission,
 
 ```{r, Additional Projections}
 proj.env$MonthlyProjections <- proj.env$MonthlyProjections %>%
-mutate(
-  ULAE_Total = EP_To_Date * ULAE_Perc,
-  Reins_Broker_Comm_Total = EP_To_Date * Reins_Broker_Perc,
-  Expenses_Total = EP_To_Date * Expenses_Perc,
-  LALAE_Paid_Total_No_Improv = EP_Undev_Paid * LALAE_Ratio_No_Improv,
-  LALAE_Paid_Total_Half_Improv = EP_Undev_Paid * LALAE_Ratio_Half_Improv,
-  LALAE_Paid_Total_Break_Even = EP_Undev_Paid * LALAE_Ratio_Break_Even,
-  LALAE_Reported_Total_No_Improv = EP_Undev_Reported * LALAE_Ratio_No_Improv,
-  LALAE_Reported_Total_Half_Improv = EP_Undev_Reported * LALAE_Ratio_Half_Improv,
-  LALAE_Reported_Total_Break_Even = EP_Undev_Reported * LALAE_Ratio_Break_Even,
-  LALAE_Reserve_No_Improv = LALAE_Ratio_No_Improv * (EP_To_Date - EP_Undev_Paid),
-  LALAE_Reserve_Half_Improv = LALAE_Ratio_Half_Improv * (EP_To_Date - EP_Undev_Paid),
-  LALAE_Reserve_Break_Even = LALAE_Ratio_Break_Even * (EP_To_Date - EP_Undev_Paid),
-  LALAE_IBNR_No_Improv = LALAE_Ratio_No_Improv * (EP_To_Date - EP_Undev_Reported),
-  LALAE_IBNR_Half_Improv = LALAE_Ratio_Half_Improv * (EP_To_Date - EP_Undev_Reported),
-  LALAE_IBNR_Break_Even = LALAE_Ratio_Break_Even * (EP_To_Date - EP_Undev_Reported)
-)
+  mutate(
+    ULAE_Total = EP_To_Date * ULAE_Perc,
+    Reins_Broker_Comm_Total = EP_To_Date * Reins_Broker_Perc,
+    Expenses_Total = EP_To_Date * Expenses_Perc,
+    LALAE_Paid_Total_No_Improv = EP_Undev_Paid * LALAE_Ratio_No_Improv,
+    LALAE_Paid_Total_Half_Improv = EP_Undev_Paid * LALAE_Ratio_Half_Improv,
+    LALAE_Paid_Total_Break_Even = EP_Undev_Paid * LALAE_Ratio_Break_Even,
+    LALAE_Reported_Total_No_Improv = EP_Undev_Reported * LALAE_Ratio_No_Improv,
+    LALAE_Reported_Total_Half_Improv = EP_Undev_Reported * LALAE_Ratio_Half_Improv,
+    LALAE_Reported_Total_Break_Even = EP_Undev_Reported * LALAE_Ratio_Break_Even,
+    LALAE_Reserve_No_Improv = LALAE_Ratio_No_Improv * (EP_To_Date - EP_Undev_Paid),
+    LALAE_Reserve_Half_Improv = LALAE_Ratio_Half_Improv * (EP_To_Date - EP_Undev_Paid),
+    LALAE_Reserve_Break_Even = LALAE_Ratio_Break_Even * (EP_To_Date - EP_Undev_Paid),
+    LALAE_IBNR_No_Improv = LALAE_Ratio_No_Improv * (EP_To_Date - EP_Undev_Reported),
+    LALAE_IBNR_Half_Improv = LALAE_Ratio_Half_Improv * (EP_To_Date - EP_Undev_Reported),
+    LALAE_IBNR_Break_Even = LALAE_Ratio_Break_Even * (EP_To_Date - EP_Undev_Reported)
+  )
 ```
 
 ### Export Monthly Projections csv
