@@ -659,7 +659,7 @@ proj.env$MonthlyProjections <- proj.env$MonthlyProjections %>%
     # Actual UEPR Balance remaining on IUEPR alone
     # IUEPR_Balance = IUEPR_Total - cumsum(IUEPR_Monthly),
     # Total Written Premium to Disinherit as it will runoff to the next treaty,
-    # DUEPR_Balance = cumsum(WP_ToEarnNextTreaty)
+    DUEPR_Balance = cumsum(WP_ToEarnNextTreaty)
   ) %>%
   ungroup()
 ```
