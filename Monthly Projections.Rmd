@@ -24,10 +24,22 @@ params:
   database_name:
     input: text
     label: Database file containing monthly data
-    value: ""
-  treaty_positions:
+  provider_server_name:
     input: text
-    label: "Treaty Positions CSV file"
+    label: "Provider Server Name"
+  provider_port:
+    input: numeric
+    label: "Provider Port"
+    value: 1433
+  provider_database_name:
+    input: text
+    label: "Provider Database Name"
+  provider_username:
+    input: text
+    label: "Provider Username"
+  provider_password:
+    input: text
+    label: "Provider Password"
     value: ""
   development_factors:
     input: text
@@ -66,13 +78,6 @@ print(params$debug)
 ### Initialize Libraries and Environment
 
 ```{r, Initialize Environment}
-# Check if libraries are installed and load them
-pacman::p_load(
-  tidyverse,
-  lubridate,
-  RSQLite
-)
-
 proj.env <- new.env()
 # set.seed(params$prng_seed) # seed the random number generator
 # prevent scientific notation for cross-platform compatibility
@@ -170,14 +175,21 @@ overrides_table contains confirmed revisions to the monthly submission data reco
 
 ```{r, Load Data}
 # Import data and ensure strings aren't recognized as factors
-proj.env$treaty_positions <- read.csv(
-  paste(params$reporting_path, params$treaty_positions, sep = ""),
-  stringsAsFactors = FALSE
-) %>%
-  mutate(
-    Effective.Date. = convert_excel_date(Effective.Date.),
-    Expiration.Date. = convert_excel_date(Expiration.Date.)
-  )
+
+# Establish a connection to the Microsoft SQL Database
+proj.env$sqlconn <- dbConnect(odbc::odbc(), 
+          Driver = "ODBC Driver 17 for SQL Server", 
+          Server = paste0(params$provider_server_name, ",", params$provider_port),
+          Database = params$provider_database_name, 
+          UID = params$provider_username, 
+          PWD = params$provider_password
+)
+
+# Query the data from the TreatyTable
+proj.env$treaty_positions <- dbGetQuery(proj.env$sqlconn, paste(readLines("TreatyTable.sql"), collapse = "\n"))
+
+# Close the database connection
+dbDisconnect(proj.env$sqlconn)
 
 proj.env$development_factors <- read.csv(
   paste(params$reporting_path, params$development_factors, sep = ""),
@@ -190,7 +202,8 @@ proj.env$extract_dates <- read.csv(
 ) %>%
   select(-key) %>%
   mutate(
-    extract_to_use = convert_excel_date(extract_to_use)
+    extract_to_use = convert_excel_date(extract_to_use),
+    nre_feed = as.character(nre_feed)
   ) %>%
   rename(extract_to_use_reason = Reason)
 
@@ -200,7 +213,8 @@ proj.env$experience_to_omit <- read.csv(
 ) %>%
   select(-key) %>%
   mutate(
-    month_to_exclude = convert_excel_date(month_to_exclude)
+    month_to_exclude = convert_excel_date(month_to_exclude),
+    nre_feed = as.character(nre_feed)
   ) %>%
   rename(reason_to_drop = Reason)
 
@@ -209,7 +223,8 @@ proj.env$overrides_table <- read.csv(
   stringsAsFactors = FALSE
 ) %>%
   mutate(
-    bordereaux_month = convert_excel_date(bordereaux_month)
+    bordereaux_month = convert_excel_date(bordereaux_month),
+    nre_feed = as.character(nre_feed)
   ) %>%
   select(-key) %>%
   rename(reason_to_override = Reason)
@@ -383,34 +398,34 @@ proj.env$date_vector <- seq.Date(as.Date("2020-01-01"), as.Date("2070-12-01"), b
 
 # expand.grid works like a cross_join, but doesn't require the vectors to be dataframes
 proj.env$MonthlyProjections <- expand.grid(
-  Treaty = proj.env$treaty_positions$KEY.,
+  Treaty = proj.env$treaty_positions$ConcatenatedKey,
   Month = proj.env$date_vector
 ) %>%
-  left_join(proj.env$treaty_positions, by = c("Treaty" = "KEY.")) %>%
+  left_join(proj.env$treaty_positions, by = c("Treaty" = "ConcatenatedKey")) %>%
   left_join((proj.env$vel_df3 %>% mutate(MONTH = ym(MONTH))), by = c("Treaty" = "KEY", "Month" = "MONTH")) %>%
   rename(
-    Program_Name = MGA...Program.Name.,
-    Carrier = Carrier.,
-    Primary_LOB = Primary.Line.s..of.Business.,
-    Secondary_LOB = Secondary.Line.s..of.Business.,
-    Effective_Date = Effective.Date.,
-    Expiration_Date = Expiration.Date.,
-    Suffix = Suffix.,
-    RA_or_LOD = RA.or.LOD.,
-    Total_Subject_Premium = Total.Subject.Premium.,
-    Target_Participation = Target.Participation...,
-    Inherited_UEPR = Inherited.UEPR...outside.of.participation..,
-    ALAE_ULAE_In_Ceded_LR = ALAE..ULAE.or.both.included.in.ceded.loss.ratio.,
-    Est_Payout_Duration_Yrs = Estimated.Payout.Duration..years.from.point.exposure..,
-    Prior_No_Impr_Gross_LALAE_Ratio_Excl_Corr = Prior.No.Improvement.Gross.LALAE.Ratio..excluding.corridor..LR.cap..etc...,
-    Prior_Half_Impr_Gross_LALAE_Ratio_Excl_Corr = Prior.Half.Improvement.Gross.LALAE.Ratio..excluding.corridor..LR.cap..etc...,
-    ULAE_Perc = ULAE.Outside.Ceding.Commission...,
-    Reins_Broker_Perc = Reinsurance.Broker.Commission...,
-    Expenses_Perc = Other.Separately.Charged..Expenses...,
-    LALAE_Ratio_No_Improv = Prior.No.Improvment.Net.LALAE.Ratio..including.corridor..LR.cap..etc...,
-    LALAE_Ratio_Half_Improv = Prior.Half.Improvment.Net.LALAE.Ratio..including.corridor..LR.cap..etc...,
-    LALAE_Ratio_Break_Even = Prior.Breakeven.LALAE.Ratio.,
-    Policy_Length = Assumed.Policy.Length.Months.,
+    Program_Name = Name,
+    Carrier = Carrier,
+    Primary_LOB = PrimaryLOB,
+    Secondary_LOB = SecondaryLOB,
+    Effective_Date = EffectiveDate,
+    Expiration_Date = ExpirationDate,
+    Suffix = Suffix,
+    RA_or_LOD = RAvLOD,
+    Total_Subject_Premium = TotalSubjectPremium,
+    Target_Participation = TargetParticipation,
+    Inherited_UEPR = InheritedUEPROutsideParticipation,
+    ALAE_ULAE_In_Ceded_LR = ULAEorALAE,
+    Est_Payout_Duration_Yrs = EstimatedPayoutDuration,
+    Prior_No_Impr_Gross_LALAE_Ratio_Excl_Corr = PriorNoImprovementGrossLALAERatio,
+    Prior_Half_Impr_Gross_LALAE_Ratio_Excl_Corr = PriorHalfImprovementGrossLALAERatio,
+    ULAE_Perc = ULAEOutsideCedingCommission,
+    Reins_Broker_Perc = ReinsuranceBrokerCommission,
+    Expenses_Perc = SeparateExpenses,
+    LALAE_Ratio_No_Improv = PriorNoImprovmentNetLALAERatio,
+    LALAE_Ratio_Half_Improv = PriorHalfImprovmentNetLALAERatio,
+    LALAE_Ratio_Break_Even = PriorBreakevenLALAERatio,
+    Policy_Length = AssumedPolicyLengthMonths,
     WP_Monthly_Data = DATAWPARTMONTH,
     EP_Monthly_Data = DATAEPARTMONTH,
     Loss_Paid_Monthly_Data = DATAPARTPAIDLOSSMONTH,
