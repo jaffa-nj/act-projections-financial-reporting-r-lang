@@ -66,7 +66,7 @@ WITH FixProgramYears AS
         [TargetParticipationPercentage] = jr.[TargetParticipationPercentage], --py.[GWP] / py.[TotalGWP], -- Issues with prior two columns
         [AssumedPolicyLengthMonths] = py.[ColWPMonths], -- [WPMonths], jr.[AssumedPolicyLengthMonths],
         --[ULAEGWPorGEP], [ULAEFlag], -- Do we need this?
-        [ULAEOutsideCedingCommission] = COALESCE(jr.[ULAEOutsideCedingCommission], NULLIF(py.[ULAE], 0)),
+        [ULAEOutsideCedingCommission] = COALESCE(IIF(jr.[ULAEOutsideCedingCommission] > 0.1, NULL, jr.[ULAEOutsideCedingCommission]), NULLIF(py.[ULAE], 0)), --py.[ULAE], -- why don't these match?
         [ULAETreatmentInsidevOutside] = jr.[ULAETreatmentInsidevOutside], --Can we get this added? Is it already available?
         [ULAETreatementAtActual] = jr.[ULAETreatementAtActual], --Can we get this added? Is it already available?
         [ULAETreatmentPartOfLoss] = jr.[ULAETreatmentPartOfLoss], --Can we get this added? Is it already available?
@@ -92,18 +92,18 @@ WITH FixProgramYears AS
         [CommissionNotes] = jr.[CommissionNotes], -- Can we get this added? Is it already available?
         -- [FlatCommission] = IIF(COALESCE([MinCedComm],0) = COALESCE([ProvCedComm],0) AND COALESCE([MinCedComm],0) = COALESCE([MaxCedComm],0), [MinCedComm], NULL),
         [FlatCommission] = IIF(COALESCE(jr.[MinimumCedingCommission],0) = COALESCE(jr.[ProvisionalCedingCommission],0) AND COALESCE(jr.[MinimumCedingCommission],0) = COALESCE([MaximumCedingCommission],0), jr.[MinimumCedingCommission], NULL),
-        [MinimumCedingCommission] = jr.[MinimumCedingCommission], -- py.[MinCedComm], -- Using JR for consistency
-        [MinimumCommission] = jr.[MinimumCommission], -- py.[MinCedComm], -- Using JR for consistency
-        [ProvisionalCedingCommission] = jr.[ProvisionalCedingCommission], -- py.[ProvCedComm], -- Using JR for consistency
-        [ProvisionalCommission] = jr.[ProvisionalCommission], -- py.[ProvCedComm],  -- Using JR for consistency
-        [MaximumCedingCommission] = jr.[MaximumCedingCommission], -- py.[MaxCedComm], -- Using JR for consistency
-        [MaximumCommission] = jr.[MaximumCommission], -- py.[MaxCedComm], -- Using JR for consistency
-        [MinimumCedingCommissionLLAERatio] = jr.[MinimumCedingCommissionLLAERatio], -- py.[MinLossRatio], -- Using JR for consistency
-        [MinimumLossRatio] = jr.[MinimumLossRatio], -- py.[MinLossRatio], -- Using JR for consistency
-        [ProvisionalCedingCommissionLLAERatio] = jr.[ProvisionalCedingCommissionLLAERatio], --py.[ProvLossRatioPerc], -- Using JR for consistency
-        [ProvisionalLossRatio] = jr.[ProvisionalLossRatio], -- py.[ProvLossRatioPerc], -- Using JR for consistency
-        [MaximumCedingCommissionLLAERatio] = jr.[MaximumCedingCommissionLLAERatio], -- py.[MaxLossRatio], -- Using JR for consistency
-        [MaximumLossRatio] = jr.[MaximumLossRatio], -- py.[MaxLossRatio], -- Using JR for consistency
+        [MinimumCedingCommission] = COALESCE(jr.[MinimumCedingCommission], py.[MinCedComm]), -- Using JR for consistency
+        [MinimumCommission] = COALESCE(jr.[MinimumCommission], py.[MinCedComm]), -- Using JR for consistency
+        [ProvisionalCedingCommission] = COALESCE(jr.[ProvisionalCedingCommission], py.[ProvCedComm]), -- Using JR for consistency
+        [ProvisionalCommission] = COALESCE(jr.[ProvisionalCommission], py.[ProvCedComm]),  -- Using JR for consistency
+        [MaximumCedingCommission] = COALESCE(jr.[MaximumCedingCommission], py.[MaxCedComm]), -- Using JR for consistency
+        [MaximumCommission] = COALESCE(jr.[MaximumCommission], py.[MaxCedComm]), -- Using JR for consistency
+        [MinimumCedingCommissionLLAERatio] = COALESCE(jr.[MinimumCedingCommissionLLAERatio], py.[MinLossRatio]), -- Using JR for consistency
+        [MinimumLossRatio] = COALESCE(jr.[MinimumLossRatio], py.[MinLossRatio]), -- Using JR for consistency
+        [ProvisionalCedingCommissionLLAERatio] = COALESCE(jr.[ProvisionalCedingCommissionLLAERatio], py.[ProvLossRatioPerc]), -- Using JR for consistency
+        [ProvisionalLossRatio] = COALESCE(jr.[ProvisionalLossRatio], py.[ProvLossRatioPerc]), -- Using JR for consistency
+        [MaximumCedingCommissionLLAERatio] = COALESCE(jr.[MaximumCedingCommissionLLAERatio], py.[MaxLossRatio]), -- Using JR for consistency
+        [MaximumLossRatio] = COALESCE(jr.[MaximumLossRatio], py.[MaxLossRatio]), -- Using JR for consistency
         [LossRatioCap] = jr.[LossRatioCap], -- Can we get this added? Is it already available?
         [OccurenceCap] = jr.[OccurenceCap], -- Can we get this added? Is it already available?
         -- Why do we have duplicate fields?
