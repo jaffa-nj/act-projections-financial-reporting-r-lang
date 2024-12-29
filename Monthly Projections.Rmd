@@ -78,6 +78,12 @@ print(params$debug)
 ### Initialize Libraries and Environment
 
 ```{r, Initialize Environment}
+# Check if libraries are installed and load them
+pacman::p_load(
+  dplyr,
+  lubridate
+)
+
 proj.env <- new.env()
 # set.seed(params$prng_seed) # seed the random number generator
 # prevent scientific notation for cross-platform compatibility
@@ -114,36 +120,36 @@ datareplace <- function(fallback, new_data) {
 
 # Return the number of months between two dates
 months_between <- function(EFF, CAL) {
-  num_months <- months(as.integer((year(CAL) - year(EFF)) * 12 + (month(CAL) - month(EFF)) + ifelse(day(CAL + 1) == 1, 1, 0)))
+  num_months <- lubridate::period(as.integer((lubridate::year(CAL) - lubridate::year(EFF)) * 12 + (lubridate::month(CAL) - lubridate::month(EFF)) + ifelse(lubridate::day(CAL + 1) == 1, 1, 0)), units = "months")
   return(num_months)
 }
 
 convert_numeric_to_period <- function(x, p) {
   i <- as.integer(x)
-  y <- period(0)
+  y <- lubridate::period(0)
   switch(p,
     "years" = {
-      y <- y + years(i)
+      y <- y + lubridate::years(i)
       y <- y + convert_numeric_to_period((x - i) * 12, "months")
     },
     "months" = {
-      y <- y + months(i)
+      y <- y + lubridate::period(i, units = "months")
       y <- y + convert_numeric_to_period((x - i) * 30.44, "days")
     },
     "days" = {
-      y <- y + days(i)
+      y <- y + lubridate::days(i)
       y <- y + convert_numeric_to_period((x - i) * 24, "hours")
     },
     "hours" = {
-      y <- y + hours(i)
+      y <- y + lubridate::hours(i)
       y <- y + convert_numeric_to_period((x - i) * 60, "minutes")
     },
     "minutes" = {
-      y <- y + minutes(i)
+      y <- y + lubridate::minutes(i)
       y <- y + convert_numeric_to_period((x - i) * 60, "seconds")
     },
     "seconds" = {
-      y <- y + seconds(i)
+      y <- y + lubridate::seconds(i)
       # no need to go further, we don't care about milliseconds
     }
   )
@@ -152,7 +158,7 @@ convert_numeric_to_period <- function(x, p) {
 
 # Convert Excel serial date to date format
 convert_excel_date <- function(excel_date) {
-  as_date(excel_date, origin = "1899-12-30")
+  as.Date(excel_date, origin = "1899-12-30")
 }
 
 # Function to preserve NAs while summing
@@ -177,7 +183,7 @@ overrides_table contains confirmed revisions to the monthly submission data reco
 # Import data and ensure strings aren't recognized as factors
 
 # Establish a connection to the Microsoft SQL Database
-proj.env$sqlconn <- dbConnect(odbc::odbc(), 
+proj.env$sqlconn <- DBI::dbConnect(odbc::odbc(), 
           Driver = "ODBC Driver 17 for SQL Server", 
           Server = paste0(params$provider_server_name, ",", params$provider_port),
           Database = params$provider_database_name, 
@@ -186,10 +192,10 @@ proj.env$sqlconn <- dbConnect(odbc::odbc(),
 )
 
 # Query the data from the TreatyTable
-proj.env$treaty_positions <- dbGetQuery(proj.env$sqlconn, paste(readLines("TreatyTable.sql"), collapse = "\n"))
+proj.env$treaty_positions <- DBI::dbGetQuery(proj.env$sqlconn, paste(readLines("TreatyTable.sql"), collapse = "\n"))
 
 # Close the database connection
-dbDisconnect(proj.env$sqlconn)
+DBI::dbDisconnect(proj.env$sqlconn)
 
 proj.env$development_factors <- read.csv(
   paste(params$reporting_path, params$development_factors, sep = ""),
@@ -233,11 +239,12 @@ proj.env$overrides_table <- read.csv(
 ### Load latest query of data and merge with the Exception Table
 
 ```{r, Query Most Recent Experience Data}
-proj.env$con <- dbConnect(
-  SQLite(),
+proj.env$con <- DBI::dbConnect(
+  RSQLite::SQLite(),
   dbname = paste(params$reporting_path, params$database_name, sep = "")
 )
-proj.env$our_db <- dbReadTable(
+
+proj.env$our_db <- DBI::dbReadTable(
   proj.env$con,
   params$source_data_table_name
 ) %>%
@@ -246,8 +253,16 @@ proj.env$our_db <- dbReadTable(
     v_created = as.Date(v_created),
     query_date = as.Date(query_date)
   )
-dbDisconnect(proj.env$con)
 
+DBI::dbDisconnect(proj.env$con)
+```
+
+```{r, Check Overrides have matching keys}
+```
+
+Apply Overrides to address data issues and filter data by Valuation Date
+
+```{r, Apply Overrides and Filter Data by Valuation Date}
 # Find the latest query_date.
 # Store it as a string and filter to only retain matching rows
 proj.env$latest_refresh_date <- as.Date(max(proj.env$our_db$v_created))
@@ -257,7 +272,7 @@ proj.env$our_db_filtered <- proj.env$our_db %>%
   dplyr::left_join(proj.env$experience_to_omit, by = c("nre_feed", "treaty_year")) %>%
   dplyr::filter(
     v_created == coalesce(extract_to_use, proj.env$latest_refresh_date),
-    bordereaux_month != coalesce(month_to_exclude, as.Date(format(Sys.Date() + months(1), "%Y-%m-01")))
+    bordereaux_month != coalesce(month_to_exclude, as.Date(format(Sys.Date() + lubridate::period(1, units = "months"), "%Y-%m-01")))
   )
 ```
 
@@ -402,7 +417,7 @@ proj.env$MonthlyProjections <- expand.grid(
   Month = proj.env$date_vector
 ) %>%
   left_join(proj.env$treaty_positions, by = c("Treaty" = "ConcatenatedKey")) %>%
-  left_join((proj.env$vel_df3 %>% mutate(MONTH = ym(MONTH))), by = c("Treaty" = "KEY", "Month" = "MONTH")) %>%
+  left_join((proj.env$vel_df3 %>% mutate(MONTH = lubridate::ym(MONTH))), by = c("Treaty" = "KEY", "Month" = "MONTH")) %>%
   rename(
     Program_Name = Name,
     Carrier = Carrier,
@@ -439,11 +454,11 @@ proj.env$MonthlyProjections <- expand.grid(
     Treaty_Length = months_between(Effective_Date, Expiration_Date),
     Policy_Length = convert_numeric_to_period(Policy_Length, "months"),
     MaturityDateOfNewPolicies = as.Date(Month %m+% Policy_Length) - 1,
-    MonthsNewPolicyInforceAfterTreatyEnds = months(ifelse(
+    MonthsNewPolicyInforceAfterTreatyEnds = lubridate::period(ifelse(
       Month >= Effective_Date & Month <= Expiration_Date,
       pmax(as.numeric(months_between(Expiration_Date, MaturityDateOfNewPolicies), "months"), 0),
       0
-    )),
+    ), units = "months"),
   ) %>%
   arrange(Treaty, Month)
 ```
@@ -483,7 +498,7 @@ Inherited_UEPR_Pattern <- function(EFF, CAL, PLEN) {
 # Project IUEPR by month using Inherited_UEPR_Pattern function
 proj.env$MonthlyProjections <- proj.env$MonthlyProjections %>%
   mutate(
-    IUEPR_Total = replace_na(Inherited_UEPR, 0),
+    IUEPR_Total = tidyr::replace_na(Inherited_UEPR, 0),
     IUEPR_Perc = Inherited_UEPR_Pattern(Effective_Date, Month, Policy_Length),
     IUEPR_Monthly = IUEPR_Total * IUEPR_Perc
   )
@@ -525,7 +540,7 @@ WrittenPattern <- function(EFF, CAL, TLEN) {
 proj.env$MonthlyProjections <- proj.env$MonthlyProjections %>%
   dplyr::mutate(
     # Our QS (quota share) of the Estimated Total Written Premium
-    WP_Total = Total_Subject_Premium * Target_Participation,
+    WP_Total = Total_Subject_Premium * TargetParticipationPercentage,
     # Allocate 1/n for all months during the treaty period (where n is the number of months the treaty is effective for), 0 otherwise
     WP_Perc = WrittenPattern(Effective_Date, Month, Treaty_Length),
     # Project monthly written participation
@@ -650,7 +665,7 @@ proj.env$MonthlyProjections <- proj.env$MonthlyProjections %>%
       "Month" = "EP_Month"
     )
   ) %>%
-  mutate(EP_Monthly = replace_na(EP_Monthly, 0))
+  mutate(EP_Monthly = tidyr::replace_na(EP_Monthly, 0))
 
 
 proj.env$MonthlyProjections <- proj.env$MonthlyProjections %>%
@@ -696,7 +711,7 @@ Two temporary tables are used to form and calculate the sumproducts of the losse
 proj.env$DEVS_rev <- proj.env$development_factors %>%
   arrange(KEY, LAG_ACCMONTH) %>%
   dplyr::filter(LAG_ACCMONTH != 0) %>% # Remove rows where LAG_ACCMONTH is 0
-  mutate(LAG_ACCMONTH = months(LAG_ACCMONTH - 1)) # Decrement LAG_ACCMONTH by 1
+  mutate(LAG_ACCMONTH = lubridate::period(LAG_ACCMONTH - 1, unit = "months")) # Decrement LAG_ACCMONTH by 1
 
 # Create an initial table that will be used for calculating losses
 proj.env$t_Loss <- proj.env$MonthlyProjections %>%
