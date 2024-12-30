@@ -193,6 +193,7 @@ proj.env$sqlconn <- DBI::dbConnect(odbc::odbc(),
 
 # Query the data from the TreatyTable
 proj.env$treaty_positions <- DBI::dbGetQuery(proj.env$sqlconn, paste(readLines("TreatyTable.sql"), collapse = "\n")) %>%
+  filter(EffectiveDate <= params$date_of_valuation) %>%
   rename(
     KEY = ConcatenatedKey,
   ) %>%
