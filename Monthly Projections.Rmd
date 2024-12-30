@@ -192,7 +192,12 @@ proj.env$sqlconn <- DBI::dbConnect(odbc::odbc(),
 )
 
 # Query the data from the TreatyTable
-proj.env$treaty_positions <- DBI::dbGetQuery(proj.env$sqlconn, paste(readLines("TreatyTable.sql"), collapse = "\n"))
+proj.env$treaty_positions <- DBI::dbGetQuery(proj.env$sqlconn, paste(readLines("TreatyTable.sql"), collapse = "\n")) %>%
+  rename(
+    KEY = ConcatenatedKey,
+  ) %>%
+  rowwise() %>%
+  ungroup()
 
 # Close the database connection
 DBI::dbDisconnect(proj.env$sqlconn)
@@ -257,7 +262,17 @@ proj.env$our_db <- DBI::dbReadTable(
 DBI::dbDisconnect(proj.env$con)
 ```
 
+Validate the data by checking for missing values in the key columns.
+
 ```{r, Check Overrides have matching keys}
+# Check that all keys in the overrides table are present in the data
+if (any(!proj.env$extract_dates$nre_feed %in% proj.env$our_db$nre_feed & !proj.env$extract_dates$treaty_year %in% proj.env$our_db$treaty_year)) {
+  stop("Keys in the extract_dates table are not present in the data.")
+}
+
+if (any(!proj.env$experience_to_omit$nre_feed %in% proj.env$our_db$nre_feed & !proj.env$experience_to_omit$treaty_year %in% proj.env$our_db$treaty_year)) {
+  stop("Keys in the experience_to_omit table are not present in the data.")
+}
 ```
 
 Apply Overrides to address data issues and filter data by Valuation Date
@@ -317,6 +332,15 @@ if (
 }
 ```
 
+Validate that any exceptions in the data have a matching key.
+
+```{r, Validate Exceptions}
+# Check that all keys in the exceptions table are present in the data
+if (any(!proj.env$overrides_table$nre_feed %in% proj.env$our_db$nre_feed & !proj.env$overrides_table$treaty_year %in% proj.env$our_db$treaty_year & !proj.env$overrides_table$bordereaux_month %in% proj.env$our_db$bordereaux_month)) {
+  stop("Keys in the exceptions table are not present in the data.")
+}
+```
+
 Now that we have the latest data validated, we can correct any known exceptions in the data.
 
 ```{r, Correct Exceptions}
@@ -341,6 +365,15 @@ proj.env$key_translations <- read.csv(
   paste(params$reporting_path, params$key_map, sep = ""),
   stringsAsFactors = FALSE
 )
+```
+
+Validate the key mappings by checking the source table.
+
+```{r, Check Mappings have matching keys}
+# Check that all keys to map exist in the treaty table
+if (any(!proj.env$key_translations$nre_feed %in% proj.env$our_db$nre_feed & !proj.env$key_translations$treaty_year %in% proj.env$our_db$treaty_year)) {
+  stop("Keys in the key_translations table are not present in the experience table.")
+}
 ```
 
 Consolidate (Aggregate) source data according to our keys
@@ -401,6 +434,15 @@ proj.env$vel_df3 <- proj.env$vel_df2 %>%
   )
 ```
 
+Validate the keys in the experience table exist in the treaty position table.
+
+```{r, Check experience keys match treaty position keys}
+# Check that all keys to map exist in the treaty table
+if (any(!proj.env$vel_df3$KEY %in% proj.env$treaty_positions$KEY)) {
+  stop("Keys in the experience table are not present in the treaty position table.")
+}
+```
+
 ### Join and Prepare Data
 
 This step creates a dataframe with every treaty having monthly rows from 2020 - 2070.
@@ -413,11 +455,11 @@ proj.env$date_vector <- seq.Date(as.Date("2020-01-01"), as.Date("2070-12-01"), b
 
 # expand.grid works like a cross_join, but doesn't require the vectors to be dataframes
 proj.env$MonthlyProjections <- expand.grid(
-  Treaty = proj.env$treaty_positions$ConcatenatedKey,
-  Month = proj.env$date_vector
+  KEY = proj.env$treaty_positions$KEY,
+  MONTH = proj.env$date_vector
 ) %>%
-  left_join(proj.env$treaty_positions, by = c("Treaty" = "ConcatenatedKey")) %>%
-  left_join((proj.env$vel_df3 %>% mutate(MONTH = lubridate::ym(MONTH))), by = c("Treaty" = "KEY", "Month" = "MONTH")) %>%
+  left_join(proj.env$treaty_positions, by = c("KEY")) %>%
+  left_join((proj.env$vel_df3 %>% mutate(MONTH = lubridate::ym(MONTH))), by = c("KEY", "MONTH")) %>%
   rename(
     Program_Name = Name,
     Carrier = Carrier,
@@ -460,7 +502,8 @@ proj.env$MonthlyProjections <- expand.grid(
       0
     ), units = "months"),
   ) %>%
-  arrange(Treaty, Month)
+  # ungroup() %>%
+  arrange(KEY, MONTH)
 ```
 
 ### Project Monthly Earned Pattern against Inherited UEPR
@@ -499,7 +542,7 @@ Inherited_UEPR_Pattern <- function(EFF, CAL, PLEN) {
 proj.env$MonthlyProjections <- proj.env$MonthlyProjections %>%
   mutate(
     IUEPR_Total = tidyr::replace_na(Inherited_UEPR, 0),
-    IUEPR_Perc = Inherited_UEPR_Pattern(Effective_Date, Month, Policy_Length),
+    IUEPR_Perc = Inherited_UEPR_Pattern(Effective_Date, MONTH, Policy_Length),
     IUEPR_Monthly = IUEPR_Total * IUEPR_Perc
   )
 ```
@@ -508,7 +551,7 @@ The following is a check to ensure that LOD Treaties have their sum of IUEPR_Mon
 
 ```{r, Validate UEPR calc gets back to total}
 proj.env$MonthlyProjections %>%
-  distinct(Treaty, .keep_all = TRUE) %>%
+  distinct(KEY, .keep_all = TRUE) %>%
   summarize(Total_IUEPR = sum(IUEPR_Total)) %>%
   pull(Total_IUEPR)
 
@@ -542,7 +585,7 @@ proj.env$MonthlyProjections <- proj.env$MonthlyProjections %>%
     # Our QS (quota share) of the Estimated Total Written Premium
     WP_Total = Total_Subject_Premium * TargetParticipationPercentage,
     # Allocate 1/n for all months during the treaty period (where n is the number of months the treaty is effective for), 0 otherwise
-    WP_Perc = WrittenPattern(Effective_Date, Month, Treaty_Length),
+    WP_Perc = WrittenPattern(Effective_Date, MONTH, Treaty_Length),
     # Project monthly written participation
     WP_Monthly = WP_Total * WP_Perc,
   )
@@ -574,7 +617,7 @@ The following is a check to ensure the originally anticipated WP participation (
 ```{r, Validate Written Premium Participation}
 # Sum of anticipated treaty WP participations
 proj.env$MonthlyProjections %>%
-  distinct(Treaty, .keep_all = TRUE) %>%
+  distinct(KEY, .keep_all = TRUE) %>%
   summarize(Total_WP_Participation = sum(WP_Total)) %>%
   pull(Total_WP_Participation)
 
@@ -615,7 +658,7 @@ proj.env$table1_Earning_Pattern <- proj.env$MonthlyProjections %>%
     Primary_LOB,
     Effective_Date,
     Suffix,
-    WP_Month = Month,
+    WP_Month = MONTH,
     # Attribute
     RA_or_LOD,
     Policy_Length,
@@ -662,7 +705,7 @@ proj.env$MonthlyProjections <- proj.env$MonthlyProjections %>%
       "Primary_LOB",
       "Effective_Date",
       "Suffix",
-      "Month" = "EP_Month"
+      "MONTH" = "EP_Month"
     )
   ) %>%
   mutate(EP_Monthly = tidyr::replace_na(EP_Monthly, 0))
@@ -678,7 +721,7 @@ proj.env$MonthlyProjections <- proj.env$MonthlyProjections %>%
     # TODO: this is a known issue and we need to develop a fix for it
     EP_Monthly_Incl_IUEPR = datareplace(EP_Monthly_Incl_IUEPR, EP_Monthly_Data),
   ) %>%
-  group_by(Treaty) %>%
+  group_by(KEY) %>%
   mutate(
     # Total Earned Premium To Date (for each treaty)
     EP_To_Date = cumsum(EP_Monthly_Incl_IUEPR),
@@ -706,6 +749,28 @@ This step projects paid and reported losses by undeveloping the total earned pre
 
 Two temporary tables are used to form and calculate the sumproducts of the losses that occur for each month, which are then joined back to MonthlyProjections.
 
+```{r, Validate Keys in Dev Factors}
+# Check that all keys in the development factors table are present in the data
+if (any(!proj.env$development_factors$KEY %in% proj.env$MonthlyProjections$KEY)) {
+  proj.env$missing_keys <- unique(proj.env$development_factors$KEY[!proj.env$development_factors$KEY %in% proj.env$MonthlyProjections$KEY])
+  warning(paste(
+    "The following keys in the development factors table are not present in the projection table:\n",
+    paste(proj.env$missing_keys, collapse = "\n")
+    )
+  )
+}
+
+# Check that all keys in the projection table are present in the development factors
+if (any(!proj.env$MonthlyProjections$KEY %in% proj.env$development_factors$KEY)) {
+  proj.env$missing_keys <- unique(proj.env$MonthlyProjections$KEY[!proj.env$MonthlyProjections$KEY %in% proj.env$development_factors$KEY])
+  warning(paste(
+    "The following keys in the projection table are not present in the development factors table:\n",
+    paste(proj.env$missing_keys, collapse = "\n")
+    )
+  )
+}
+```
+
 ```{r, Apply development factors}
 # Prepare the development factors dataset to have 0 months lag indicating the current month
 proj.env$DEVS_rev <- proj.env$development_factors %>%
@@ -717,29 +782,29 @@ proj.env$DEVS_rev <- proj.env$development_factors %>%
 proj.env$t_Loss <- proj.env$MonthlyProjections %>%
   select(
     # Primary Key
-    Treaty,
+    KEY,
     # Unique Key
     Program_Name,
     Primary_LOB,
     Effective_Date,
     Suffix,
     Effective_Date,
-    Month,
+    MONTH,
     # Attribute
     EP_Monthly_Incl_IUEPR
   ) %>%
   # This is basically the same as using window functions in SQL
   # e.g. SUM(x) OVER (PARTITION BY y) in this case
-  group_by(Treaty) %>%
+  group_by(KEY) %>%
   mutate(Total_Earned_Partic = sum(EP_Monthly_Incl_IUEPR)) %>%
   ungroup()
 
 # Join the development factors
 proj.env$t_Loss_2 <- proj.env$t_Loss %>%
-  full_join(proj.env$DEVS_rev, by = c("Treaty" = "KEY"), relationship = "many-to-many") %>%
+  full_join(proj.env$DEVS_rev, by = c("KEY"), relationship = "many-to-many") %>%
   dplyr::mutate(
     # This column contains the month for the paid and reported losses
-    LAG_date = Month %m+% LAG_ACCMONTH,
+    LAG_date = MONTH %m+% LAG_ACCMONTH,
     # Paid and Reported losses using development factors on Earned Premium
     # I renamed Paid_Loss -> EP_Undev_Paid
     # I renamed Reported_Loss -> EP_Undev_Reported
@@ -786,7 +851,7 @@ proj.env$MonthlyProjections <- proj.env$MonthlyProjections %>% left_join(proj.en
   "Primary_LOB",
   "Effective_Date",
   "Suffix",
-  "Month" = "LAG_date"
+  "MONTH" = "LAG_date"
 ))
 ```
 
@@ -794,7 +859,7 @@ The following is a check to ensure the columns for paid and reported losses sum 
 
 ```{r, Validate Losses}
 proj.env$Check_EP_Undev_Losses <- proj.env$MonthlyProjections %>%
-  group_by(Treaty) %>%
+  group_by(KEY) %>%
   summarize(
     EP_Monthly_Incl_IUEPR_Total = sum(EP_Monthly_Incl_IUEPR),
     EP_Undev_Paid_Total = max(EP_Undev_Paid),
@@ -816,6 +881,7 @@ proj.env$MonthlyProjections <- proj.env$MonthlyProjections %>%
     ULAE_Total = EP_To_Date * ULAE_Perc,
     Reins_Broker_Comm_Total = EP_To_Date * Reins_Broker_Perc,
     Expenses_Total = EP_To_Date * Expenses_Perc,
+    # These should be removed and just read from Treaty table
     LALAE_Paid_Total_No_Improv = EP_Undev_Paid * LALAE_Ratio_No_Improv,
     LALAE_Paid_Total_Half_Improv = EP_Undev_Paid * LALAE_Ratio_Half_Improv,
     LALAE_Paid_Total_Break_Even = EP_Undev_Paid * LALAE_Ratio_Break_Even,
