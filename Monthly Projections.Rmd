@@ -782,7 +782,9 @@ if (any(!proj.env$MonthlyProjections$KEY %in% proj.env$development_factors$KEY))
 proj.env$DEVS_rev <- proj.env$development_factors %>%
   arrange(KEY, LAG_ACCMONTH) %>%
   dplyr::filter(LAG_ACCMONTH != 0) %>% # Remove rows where LAG_ACCMONTH is 0
-  mutate(LAG_ACCMONTH = lubridate::period(LAG_ACCMONTH - 1, unit = "months")) # Decrement LAG_ACCMONTH by 1
+  rowwise() %>%
+  mutate(LAG_ACCMONTH = lubridate::period(LAG_ACCMONTH - 1, unit = "months")) %>% # Decrement LAG_ACCMONTH by 1
+  ungroup()
 
 # Create an initial table that will be used for calculating losses
 proj.env$t_Loss <- proj.env$MonthlyProjections %>%
