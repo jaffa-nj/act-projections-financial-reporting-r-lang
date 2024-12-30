@@ -198,6 +198,10 @@ proj.env$treaty_positions <- DBI::dbGetQuery(proj.env$sqlconn, paste(readLines("
     KEY = ConcatenatedKey,
   ) %>%
   rowwise() %>%
+  mutate(
+    TreatyLength = months_between(EffectiveDate, ExpirationDate),
+    AssumedPolicyLengthMonths = convert_numeric_to_period(AssumedPolicyLengthMonths, "months"),
+  ) %>%
   ungroup()
 
 # Close the database connection
@@ -468,6 +472,7 @@ proj.env$MonthlyProjections <- expand.grid(
     Secondary_LOB = SecondaryLOB,
     Effective_Date = EffectiveDate,
     Expiration_Date = ExpirationDate,
+    Treaty_Length = TreatyLength,
     Suffix = Suffix,
     RA_or_LOD = RAvLOD,
     Total_Subject_Premium = TotalSubjectPremium,
@@ -475,14 +480,9 @@ proj.env$MonthlyProjections <- expand.grid(
     Inherited_UEPR = InheritedUEPROutsideParticipation,
     ALAE_ULAE_In_Ceded_LR = ULAEorALAE,
     Est_Payout_Duration_Yrs = EstimatedPayoutDuration,
-    Prior_No_Impr_Gross_LALAE_Ratio_Excl_Corr = PriorNoImprovementGrossLALAERatio,
-    Prior_Half_Impr_Gross_LALAE_Ratio_Excl_Corr = PriorHalfImprovementGrossLALAERatio,
     ULAE_Perc = ULAEOutsideCedingCommission,
     Reins_Broker_Perc = ReinsuranceBrokerCommission,
     Expenses_Perc = SeparateExpenses,
-    LALAE_Ratio_No_Improv = PriorNoImprovmentNetLALAERatio,
-    LALAE_Ratio_Half_Improv = PriorHalfImprovmentNetLALAERatio,
-    LALAE_Ratio_Break_Even = PriorBreakevenLALAERatio,
     Policy_Length = AssumedPolicyLengthMonths,
     WP_Monthly_Data = DATAWPARTMONTH,
     EP_Monthly_Data = DATAEPARTMONTH,
@@ -491,14 +491,19 @@ proj.env$MonthlyProjections <- expand.grid(
     ULAE_Paid_Monthly_Data = DATAPARTPAIDULAEMONTH,
     Loss_Case_Reserve_Data = DATAPARTCASEOSLOSS,
     ALAE_Case_Reserve_Data = DATAPARTCASEOSALAE,
-    ULAE_Case_Reserve_Data = DATAPARTCASEOSULAE
+    ULAE_Case_Reserve_Data = DATAPARTCASEOSULAE,
+    # These should be removed and just read from Treaty table
+    Prior_No_Impr_Gross_LALAE_Ratio_Excl_Corr = PriorNoImprovementGrossLALAERatio,
+    Prior_Half_Impr_Gross_LALAE_Ratio_Excl_Corr = PriorHalfImprovementGrossLALAERatio,
+    LALAE_Ratio_No_Improv = PriorNoImprovmentNetLALAERatio,
+    LALAE_Ratio_Half_Improv = PriorHalfImprovmentNetLALAERatio,
+    LALAE_Ratio_Break_Even = PriorBreakevenLALAERatio
   ) %>%
+  # rowwise() %>%
   mutate(
-    Treaty_Length = months_between(Effective_Date, Expiration_Date),
-    Policy_Length = convert_numeric_to_period(Policy_Length, "months"),
-    MaturityDateOfNewPolicies = as.Date(Month %m+% Policy_Length) - 1,
+    MaturityDateOfNewPolicies = as.Date(MONTH %m+% Policy_Length) - 1,
     MonthsNewPolicyInforceAfterTreatyEnds = lubridate::period(ifelse(
-      Month >= Effective_Date & Month <= Expiration_Date,
+      MONTH >= Effective_Date & MONTH <= Expiration_Date,
       pmax(as.numeric(months_between(Expiration_Date, MaturityDateOfNewPolicies), "months"), 0),
       0
     ), units = "months"),
