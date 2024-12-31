@@ -118,41 +118,57 @@ datareplace <- function(fallback, new_data) {
   ifelse(is.na(new_data), as.numeric(fallback), as.numeric(new_data))
 }
 
-# Return the number of months between two dates
-months_between <- function(EFF, CAL) {
-  num_months <- lubridate::period(as.integer((lubridate::year(CAL) - lubridate::year(EFF)) * 12 + (lubridate::month(CAL) - lubridate::month(EFF)) + ifelse(lubridate::day(CAL + 1) == 1, 1, 0)), units = "months")
-  return(num_months)
+  # Return the number of months between two dates
+months_between <- function(startDate, endDate) {
+  if (length(startDate) == 1) startDate <- rep(startDate, length(endDate))
+  if (length(endDate) == 1) endDate <- rep(endDate, length(startDate))
+  if (length(startDate) != length(endDate)) stop("Length of startDate and endDate must be the same.")
+
+  num_months <- mapply(function(s, e) {
+    if (lubridate::day(s) == 1 && lubridate::day(e) == lubridate::day(lubridate::ceiling_date(e, "month") - 1)) {
+      e <- e + lubridate::days(1)
+    }
+    lubridate::interval(s, e) %/% months(1)
+  }, startDate, endDate)
+
+  return(lubridate::period(num_months, units = "months"))
 }
 
 convert_numeric_to_period <- function(x, p) {
-  i <- as.integer(x)
-  y <- lubridate::period(0)
-  switch(p,
-    "years" = {
-      y <- y + lubridate::years(i)
-      y <- y + convert_numeric_to_period((x - i) * 12, "months")
-    },
-    "months" = {
-      y <- y + lubridate::period(i, units = "months")
-      y <- y + convert_numeric_to_period((x - i) * 30.44, "days")
-    },
-    "days" = {
-      y <- y + lubridate::days(i)
-      y <- y + convert_numeric_to_period((x - i) * 24, "hours")
-    },
-    "hours" = {
-      y <- y + lubridate::hours(i)
-      y <- y + convert_numeric_to_period((x - i) * 60, "minutes")
-    },
-    "minutes" = {
-      y <- y + lubridate::minutes(i)
-      y <- y + convert_numeric_to_period((x - i) * 60, "seconds")
-    },
-    "seconds" = {
-      y <- y + lubridate::seconds(i)
-      # no need to go further, we don't care about milliseconds
-    }
-  )
+  if (length(x) > 1) {
+    y <- lapply(x, convert_numeric_to_period, p = p)
+    y <- do.call("c", y)
+  }
+  else {
+    i <- as.integer(x)
+    y <- lubridate::period(0)
+    switch(p,
+           "years" = {
+             y <- y + lubridate::years(i)
+             y <- y + convert_numeric_to_period((x - i) * 12, "months")
+           },
+           "months" = {
+             y <- y + lubridate::period(i, units = "months")
+             y <- y + convert_numeric_to_period((x - i) * 30.44, "days")
+           },
+           "days" = {
+             y <- y + lubridate::days(i)
+             y <- y + convert_numeric_to_period((x - i) * 24, "hours")
+           },
+           "hours" = {
+             y <- y + lubridate::hours(i)
+             y <- y + convert_numeric_to_period((x - i) * 60, "minutes")
+           },
+           "minutes" = {
+             y <- y + lubridate::minutes(i)
+             y <- y + convert_numeric_to_period((x - i) * 60, "seconds")
+           },
+           "seconds" = {
+             y <- y + lubridate::seconds(i)
+             # no need to go further, we don't care about milliseconds
+           }
+    )
+  }
   return(y)
 }
 
@@ -197,12 +213,10 @@ proj.env$treaty_positions <- DBI::dbGetQuery(proj.env$sqlconn, paste(readLines("
   rename(
     KEY = ConcatenatedKey,
   ) %>%
-  rowwise() %>%
   mutate(
     TreatyLength = months_between(EffectiveDate, ExpirationDate),
     AssumedPolicyLengthMonths = convert_numeric_to_period(AssumedPolicyLengthMonths, "months"),
-  ) %>%
-  ungroup()
+  )
 
 # Close the database connection
 DBI::dbDisconnect(proj.env$sqlconn)
@@ -502,11 +516,11 @@ proj.env$MonthlyProjections <- expand.grid(
   # rowwise() %>%
   mutate(
     MaturityDateOfNewPolicies = as.Date(MONTH %m+% Policy_Length) - 1,
-    MonthsNewPolicyInforceAfterTreatyEnds = lubridate::period(ifelse(
-      MONTH >= Effective_Date & MONTH <= Expiration_Date,
-      pmax(as.numeric(months_between(Expiration_Date, MaturityDateOfNewPolicies), "months"), 0),
-      0
-    ), units = "months"),
+    MonthsNewPolicyInforceAfterTreatyEnds = dplyr::if_else(
+      MONTH %within% lubridate::interval(Effective_Date, Expiration_Date),
+      months_between(Expiration_Date, MaturityDateOfNewPolicies),
+      NA
+    ),
   ) %>%
   # ungroup() %>%
   arrange(KEY, MONTH)
@@ -660,10 +674,7 @@ EarnedPattern <- function(k, PLEN) {
 proj.env$table1_Earning_Pattern <- proj.env$MonthlyProjections %>%
   select(
     # Keys
-    Program_Name,
-    Primary_LOB,
-    Effective_Date,
-    Suffix,
+    KEY,
     WP_Month = MONTH,
     # Attribute
     RA_or_LOD,
@@ -682,7 +693,7 @@ proj.env$table2_Earning_Pattern <- left_join(
     # Calculate the lag between writing and earning
     Earned_Lag = months_between(WP_Month, EP_Month),
     # Calculate the percent of premium earned in each month from each WP month
-    Earned_Pct = ifelse(
+    Earned_Pct = dplyr::if_else(
       RA_or_LOD == "LOD" & EP_Month > Expiration_Date,
       0,
       EarnedPattern(Earned_Lag, Policy_Length)
@@ -694,10 +705,7 @@ proj.env$table2_Earning_Pattern <- left_join(
   dplyr::filter(EP_Monthly != 0) %>%
   # Sum across WP months because it's irrelevant which WP month it was sourced from, rather only when it was earned
   group_by(
-    Program_Name,
-    Primary_LOB,
-    Effective_Date,
-    Suffix,
+    KEY,
     EP_Month
   ) %>%
   summarize(EP_Monthly = sum(EP_Monthly))
