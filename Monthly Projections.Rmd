@@ -569,7 +569,6 @@ proj.env$MonthlyProjections <- expand.grid(
     LALAE_Ratio_Half_Improv = PriorHalfImprovmentNetLALAERatio,
     LALAE_Ratio_Break_Even = PriorBreakevenLALAERatio
   ) %>%
-  # rowwise() %>%
   mutate(
     MaturityDateOfNewPolicies = as.Date(MONTH %m+% Policy_Length) - 1,
     MonthsNewPolicyInforceAfterTreatyEnds = dplyr::if_else(
@@ -578,7 +577,6 @@ proj.env$MonthlyProjections <- expand.grid(
       NA
     ),
   ) %>%
-  # ungroup() %>%
   arrange(KEY, MONTH)
 ```
 
@@ -603,12 +601,16 @@ proj.env$MonthlyProjections <- proj.env$MonthlyProjections %>%
 The following is a check to ensure that LOD Treaties have their sum of IUEPR_Monthly equal to IUEPR_Total.
 
 ```{r, Validate UEPR calc gets back to total}
-proj.env$MonthlyProjections %>%
+proj.env$Total_IUEPR <- proj.env$MonthlyProjections %>%
   distinct(KEY, .keep_all = TRUE) %>%
   summarize(Total_IUEPR = sum(IUEPR_Total)) %>%
   pull(Total_IUEPR)
 
-sum(proj.env$MonthlyProjections$IUEPR_Monthly)
+proj.env$Total_IUEPR_Monthly <- sum(proj.env$MonthlyProjections$IUEPR_Monthly)
+
+if (proj.env$Total_IUEPR != proj.env$Total_IUEPR_Monthly) {
+  stop("Total IUEPR and Total IUEPR Monthly are not equal.")
+}
 ```
 
 ### Project Company's Share of Monthly Written Premium
@@ -655,7 +657,7 @@ The following is a check to ensure the originally anticipated WP participation (
 
 ```{r, Validate Written Premium Participation}
 # Sum of anticipated treaty WP participations
-proj.env$MonthlyProjections %>%
+proj.env$Total_WP_Participation <- proj.env$MonthlyProjections %>%
   distinct(KEY, .keep_all = TRUE) %>%
   summarize(Total_WP_Participation = sum(WP_Total)) %>%
   pull(Total_WP_Participation)
@@ -663,7 +665,12 @@ proj.env$MonthlyProjections %>%
 # WP_Monthly contains projected monthly WP and, where available, reported WP
 # Therefore, we sum the revised WP_Monthly column and add the monthly discrepancies between
 # projected and actual reported values.
-sum(proj.env$MonthlyProjections$WP_Monthly) + proj.env$WP_Proj_vs_Rept
+proj.env$Total_WP_Monthly <- sum(proj.env$MonthlyProjections$WP_Monthly) + proj.env$WP_Proj_vs_Rept
+
+# Throw an error if the two amounts are not equal
+if (abs(proj.env$Total_WP_Participation - proj.env$Total_WP_Monthly) > 0.01) {
+  stop("Total WP Participation and Total WP Monthly are not equal.")
+}
 ```
 
 ### Project Company's Share of Monthly Earned Premium
