@@ -123,45 +123,47 @@ months_between <- function(startDate, endDate) {
   if (length(startDate) == 1) startDate <- rep(startDate, length(endDate))
   if (length(endDate) == 1) endDate <- rep(endDate, length(startDate))
   if (length(startDate) != length(endDate)) stop("Length of startDate and endDate must be the same.")
-
+  
   num_months <- mapply(function(s, e) {
     if (lubridate::day(s) == 1 && lubridate::day(e) == lubridate::day(lubridate::ceiling_date(e, "month") - 1)) {
       e <- e + lubridate::days(1)
     }
     lubridate::interval(s, e) %/% months(1)
   }, startDate, endDate)
-
-  return(lubridate::period(num_months, units = "months"))
+  
+  return(num_months)
 }
 
+# This function is slow if applied to a large vector
+# Should only be used on the Treaty Terms table
 convert_numeric_to_period <- function(x, p) {
   if (length(x) > 1) {
     y <- lapply(x, convert_numeric_to_period, p = p)
     y <- do.call("c", y)
-  }
-  else {
-    i <- as.integer(x)
+  } else {
+    i <- floor(x)
+    remainder <- x - i
     y <- lubridate::period(0)
     switch(p,
            "years" = {
              y <- y + lubridate::years(i)
-             y <- y + convert_numeric_to_period((x - i) * 12, "months")
+             if (remainder > 0) y <- y + convert_numeric_to_period(remainder * 12, "months")
            },
            "months" = {
-             y <- y + lubridate::period(i, units = "months")
-             y <- y + convert_numeric_to_period((x - i) * 30.44, "days")
+             y <- y + months(i)
+             if (remainder > 0) y <- y + convert_numeric_to_period(remainder * 30.44, "days")
            },
            "days" = {
              y <- y + lubridate::days(i)
-             y <- y + convert_numeric_to_period((x - i) * 24, "hours")
+             if (remainder > 0) y <- y + convert_numeric_to_period(remainder * 24, "hours")
            },
            "hours" = {
              y <- y + lubridate::hours(i)
-             y <- y + convert_numeric_to_period((x - i) * 60, "minutes")
+             if (remainder > 0) y <- y + convert_numeric_to_period(remainder * 60, "minutes")
            },
            "minutes" = {
              y <- y + lubridate::minutes(i)
-             y <- y + convert_numeric_to_period((x - i) * 60, "seconds")
+             if (remainder > 0) y <- y + convert_numeric_to_period(remainder * 60, "seconds")
            },
            "seconds" = {
              y <- y + lubridate::seconds(i)
@@ -185,6 +187,60 @@ sum_with_na <- function(x) {
     return(sum(x, na.rm = TRUE))
   }
 }
+
+# Define a function used for projecting Inherited UEPR
+# NL: For LOD policies only
+#     LOD policies are comprised of two components,
+#         1) New Risks, and
+#         2) Inherited LOD from prior UW period
+# Assumptions:
+#     1) all inherited UEPR is on policies paid at policy inception
+#     2) The average underlying policy is written mid month
+# EFF: the effective date of the treaty (assumed to be the first of the month)
+# PLEN: Policy Length in Months -- the assumed length of the underlying exposure
+# K: the difference between the month in question and the effective date of the treaty
+# When this function is used below, it uses column "Policy_Length" for that treaty's assumed policy length
+Inherited_UEPR_Pattern <- function(EFF, CAL, PLEN) {
+  k <- as.numeric(months_between(EFF, CAL), "months")
+  # need to convert period back to integer form
+  PLEN <- as.numeric(PLEN, "months")
+  dplyr::if_else(k >= 0 & k <= (PLEN - 1), (2 / PLEN) * (1 - (k + 0.5) / PLEN), 0)
+  # {(12-(k+0.5)*(12/PLEN))/(6*PLEN)}
+  # k+0.5 adjusts for the mid-month bind
+  # (k+0.5)/PLEN yields the proportion of the overall length that has already passed (Parallelogram horizontal distance)
+  # 1-(k+0.5)/PLEN yields the portion of the overall length yet to pass (Parallelogram horizontal distance)
+}
+
+# Define a function used for projecting monthly written premium
+# Calculates the expected fraction of written premium in a given month by checking if that month
+# is between the effective date and the expiration date
+# EFF = The effective date of the policy, assumed to be the first of the month
+# CAL = The calendar month for which we are calculating the expected written premium, assumed to be the first of the month
+# TLEN = The length of the treaty in months
+# Returns 1/TLEN if the month is within the treaty period, 0 otherwise
+WrittenPattern <- function(EFF, CAL, TLEN) {
+  treaty_month <- as.numeric(months_between(EFF, CAL), "months")
+  # need to convert period back to integer form
+  TLEN <- as.numeric(TLEN, "months")
+  dplyr::if_else(treaty_month >= 0 & treaty_month < TLEN, 1 / TLEN, 0)
+}
+
+# Define a function used for used for projecting monthly earned premium
+# k: month of treaty
+# PLEN: Policy Length in Months - the assumed length of the underlying exposure (passed from "Policy_Length")
+# The function generates a vector with proportions evenly distributed across the assumed months
+# of policy length. The 1st month, however, splits half of its share with the month following the policy duration.
+EarnedPattern <- function(k, PLEN) {
+  # need to convert period back to integer form
+  k <- as.numeric(k, "months")
+  PLEN <- as.numeric(PLEN, "months")
+  case_when(
+    (k >= 1 & k <= (PLEN - 1)) ~ 1 / PLEN,
+    (k == 0 | k == PLEN) ~ 1 / (2 * PLEN),
+    TRUE ~ 0
+  )
+}
+
 ```
 
 ### Load Data
@@ -533,29 +589,6 @@ This step projects a monthly earned pattern to the Inherited UEPR, resulting in 
 This only applies to LOD treaties.
 
 ```{r, Project Monthly Earned Pattern against Inherited UEPR}
-# Define a function used for projecting Inherited UEPR
-# NL: For LOD policies only
-#     LOD policies are comprised of two components,
-#         1) New Risks, and
-#         2) Inherited LOD from prior UW period
-# Assumptions:
-#     1) all inherited UEPR is on policies paid at policy inception
-#     2) The average underlying policy is written mid month
-# EFF: the effective date of the treaty (assumed to be the first of the month)
-# PLEN: Policy Length in Months -- the assumed length of the underlying exposure
-# K: the difference between the month in question and the effective date of the treaty
-# When this function is used below, it uses column "Policy_Length" for that treaty's assumed policy length
-Inherited_UEPR_Pattern <- function(EFF, CAL, PLEN) {
-  k <- as.numeric(months_between(EFF, CAL), "months")
-  # need to convert period back to integer form
-  PLEN <- as.numeric(PLEN, "months")
-  dplyr::if_else(k >= 0 & k <= (PLEN - 1), (2 / PLEN) * (1 - (k + 0.5) / PLEN), 0)
-  # {(12-(k+0.5)*(12/PLEN))/(6*PLEN)}
-  # k+0.5 adjusts for the mid-month bind
-  # (k+0.5)/PLEN yields the proportion of the overall length that has already passed (Parallelogram horizontal distance)
-  # 1-(k+0.5)/PLEN yields the portion of the overall length yet to pass (Parallelogram horizontal distance)
-}
-
 
 
 # Project IUEPR by month using Inherited_UEPR_Pattern function
@@ -585,20 +618,6 @@ This step projects share of monthly written premium and revises projections with
 The projection evenly distributes the estimated total written premium across the n month treaty period.
 
 ```{r, Project Business Proportion of Written Premium}
-# Define a function used for projecting monthly written premium
-# Calculates the expected fraction of written premium in a given month by checking if that month
-# is between the effective date and the expiration date
-# EFF = The effective date of the policy, assumed to be the first of the month
-# CAL = The calendar month for which we are calculating the expected written premium, assumed to be the first of the month
-# TLEN = The length of the treaty in months
-# Returns 1/TLEN if the month is within the treaty period, 0 otherwise
-WrittenPattern <- function(EFF, CAL, TLEN) {
-  treaty_month <- as.numeric(months_between(EFF, CAL), "months")
-  # need to convert period back to integer form
-  TLEN <- as.numeric(TLEN, "months")
-  dplyr::if_else(treaty_month >= 0 & treaty_month < TLEN, 1 / TLEN, 0)
-}
-
 # Project Written Participation by Month
 proj.env$MonthlyProjections <- proj.env$MonthlyProjections %>%
   dplyr::mutate(
@@ -654,21 +673,6 @@ This step projects share of monthly earned premium and revises projections with 
 Two temporary tables are created to form and calculate the sumproduct of earned premium for each month, which are then joined back to MonthlyProjections.
 
 ```{r, Project Business Proportion of Earned Premium}
-# Define a function used for used for projecting monthly earned premium
-# k: month of treaty
-# PLEN: Policy Length in Months - the assumed length of the underlying exposure (passed from "Policy_Length")
-# The function generates a vector with proportions evenly distributed across the assumed months
-# of policy length. The 1st month, however, splits half of its share with the month following the policy duration.
-EarnedPattern <- function(k, PLEN) {
-  # need to convert period back to integer form
-  k <- as.numeric(k, "months")
-  PLEN <- as.numeric(PLEN, "months")
-  case_when(
-    (k >= 1 & k <= (PLEN - 1)) ~ 1 / PLEN,
-    (k == 0 | k == PLEN) ~ 1 / (2 * PLEN),
-    TRUE ~ 0
-  )
-}
 
 # Create first table containing all rows in MonthlyProjections dataframe
 proj.env$table1_Earning_Pattern <- proj.env$MonthlyProjections %>%
