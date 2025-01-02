@@ -533,8 +533,15 @@ proj.env$MonthlyProjections <- expand.grid(
   KEY = proj.env$treaty_positions$KEY,
   MONTH = proj.env$date_vector
 ) %>%
-  left_join(proj.env$treaty_positions, by = c("KEY")) %>%
-  left_join((proj.env$vel_df3 %>% mutate(MONTH = lubridate::ym(MONTH))), by = c("KEY", "MONTH")) %>%
+  inner_join(proj.env$treaty_positions, by = c("KEY")) %>%
+  filter(MONTH >= EffectiveDate) %>%
+  left_join(
+    (
+      proj.env$vel_df3 %>%
+        mutate(MONTH = lubridate::ym(MONTH))
+    ),
+    by = c("KEY", "MONTH")
+  ) %>%
   rename(
     Program_Name = Name,
     Carrier = Carrier,
