@@ -685,17 +685,22 @@ proj.env$table1_Earning_Pattern <- proj.env$MonthlyProjections %>%
     Policy_Length,
     WP_Monthly,
     Expiration_Date,
-  )
+  ) %>%
+  rowwise() %>%
+  mutate(
+    EP_Months = list(seq.Date(WP_Month, WP_Month %m+% Policy_Length - months(1), by = "month")),
+    EP_Month_Index = list(seq_along(EP_Months))
+  ) %>%
+  tidyr::unnest(cols = c(EP_Months, EP_Month_Index)) %>%
+  rename(
+    EP_Month = EP_Months,
+    Earned_Lag = EP_Month_Index
+  ) %>%
+  ungroup()
 
-# Create a second table by joining on the newly created EP_Month, resulting in multiple earning months for each WP month
-proj.env$table2_Earning_Pattern <- left_join(
-  proj.env$table1_Earning_Pattern,
-  select(proj.env$table1_Earning_Pattern, EP_Month = WP_Month) %>% distinct(),
-  join_by(WP_Month <= EP_Month)
-) %>%
+# Create a additional rows for every month the WP is earned in ( WP_Month through WP_Month + Policy_Length)
+proj.env$table2_Earning_Pattern <- proj.env$table1_Earning_Pattern %>%
   dplyr::mutate(
-    # Calculate the lag between writing and earning
-    Earned_Lag = months_between(WP_Month, EP_Month),
     # Calculate the percent of premium earned in each month from each WP month
     Earned_Pct = dplyr::if_else(
       RA_or_LOD == "LOD" & EP_Month > Expiration_Date,
@@ -713,21 +718,26 @@ proj.env$table2_Earning_Pattern <- left_join(
     EP_Month
   ) %>%
   summarize(EP_Monthly = sum(EP_Monthly))
-# ungroup() # ungroup shouldn't be needed because summarize will have collapsed the rows by the group_by columns
 
 # Join the earned premiums (EP_Monthly) to MonthlyProjections
 proj.env$MonthlyProjections <- proj.env$MonthlyProjections %>%
-  left_join(select(proj.env$table2_Earning_Pattern, c(Program_Name, Primary_LOB, Effective_Date, Suffix, EP_Month, EP_Monthly)),
+  left_join(
+    proj.env$table2_Earning_Pattern,
     by = c(
-      "Program_Name",
-      "Primary_LOB",
-      "Effective_Date",
-      "Suffix",
+      "KEY",
       "MONTH" = "EP_Month"
     )
   ) %>%
   mutate(EP_Monthly = tidyr::replace_na(EP_Monthly, 0))
 
+# Validate that the sum of EP_Monthly equals the sum of WP_Monthly
+total_wp_monthly <- sum(proj.env$MonthlyProjections$WP_Monthly, na.rm = TRUE) - sum(proj.env$MonthlyProjections$WP_ToEarnNextTreaty, na.rm = TRUE)
+total_ep_monthly <- sum(proj.env$MonthlyProjections$EP_Monthly, na.rm = TRUE) 
+
+if (abs(total_wp_monthly - total_ep_monthly) > 0.01) {
+  warning("Total WP_Monthly and Total EP_Monthly are not equal.")
+  # we need to account for the Written Premium that will not be earned in LOD Treaties
+}
 
 proj.env$MonthlyProjections <- proj.env$MonthlyProjections %>%
   mutate(
@@ -753,12 +763,6 @@ proj.env$MonthlyProjections <- proj.env$MonthlyProjections %>%
     DUEPR_Balance = cumsum(WP_ToEarnNextTreaty)
   ) %>%
   ungroup()
-```
-
-```{r, Validate Written to Earned Premium}
-# Check that total earned premium == total written premium
-sum(proj.env$MonthlyProjections$WP_Monthly)
-sum(proj.env$MonthlyProjections$EP_Monthly)
 ```
 
 ### Undeveloping Earned Premiums for Projecting Paid and Reported Losses
