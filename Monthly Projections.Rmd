@@ -568,20 +568,11 @@ proj.env$MonthlyProjections <- expand.grid(
     by = c("KEY", "MONTH")
   ) %>%
   rename(
-    Program_Name = Name,
-    Carrier = Carrier,
-    Primary_LOB = PrimaryLOB,
-    Secondary_LOB = SecondaryLOB,
     Effective_Date = EffectiveDate,
     Expiration_Date = ExpirationDate,
-    Treaty_Length = TreatyLength,
-    Suffix = Suffix,
     RA_or_LOD = RAvLOD,
     Total_Subject_Premium = TotalSubjectPremium,
-    Target_Participation = TargetParticipation,
     Inherited_UEPR = InheritedUEPROutsideParticipation,
-    ALAE_ULAE_In_Ceded_LR = ULAEorALAE,
-    Est_Payout_Duration_Yrs = EstimatedPayoutDuration,
     ULAE_Perc = ULAEOutsideCedingCommission,
     Reins_Broker_Perc = ReinsuranceBrokerCommission,
     Expenses_Perc = SeparateExpenses,
@@ -594,12 +585,6 @@ proj.env$MonthlyProjections <- expand.grid(
     Loss_Case_Reserve_Data = DATAPARTCASEOSLOSS,
     ALAE_Case_Reserve_Data = DATAPARTCASEOSALAE,
     ULAE_Case_Reserve_Data = DATAPARTCASEOSULAE,
-    # These should be removed and just read from Treaty table
-    Prior_No_Impr_Gross_LALAE_Ratio_Excl_Corr = PriorNoImprovementGrossLALAERatio,
-    Prior_Half_Impr_Gross_LALAE_Ratio_Excl_Corr = PriorHalfImprovementGrossLALAERatio,
-    LALAE_Ratio_No_Improv = PriorNoImprovmentNetLALAERatio,
-    LALAE_Ratio_Half_Improv = PriorHalfImprovmentNetLALAERatio,
-    LALAE_Ratio_Break_Even = PriorBreakevenLALAERatio
   ) %>%
   mutate(
     MaturityDateOfNewPolicies = as.Date(MONTH %m+% Policy_Length) - 1,
@@ -658,7 +643,7 @@ proj.env$MonthlyProjections <- proj.env$MonthlyProjections %>%
     # Our QS (quota share) of the Estimated Total Written Premium
     WP_Total = Total_Subject_Premium * TargetParticipationPercentage,
     # Allocate 1/n for all months during the treaty period (where n is the number of months the treaty is effective for), 0 otherwise
-    WP_Perc = WrittenPattern(Effective_Date, MONTH, Treaty_Length),
+    WP_Perc = WrittenPattern(Effective_Date, MONTH, TreatyLength),
     # Project monthly written participation
     WP_Monthly = WP_Total * WP_Perc,
   )
@@ -812,6 +797,7 @@ Two temporary tables are used to form and calculate the sumproducts of the losse
 
 ```{r, Validate Keys in Dev Factors}
 # Check that all keys in the development factors table are present in the data
+# This is a warning because dev factors may have treaties not yet bound or effective
 if (any(!proj.env$development_factors$KEY %in% proj.env$MonthlyProjections$KEY)) {
   proj.env$missing_keys <- unique(proj.env$development_factors$KEY[!proj.env$development_factors$KEY %in% proj.env$MonthlyProjections$KEY])
   warning(paste(
@@ -824,7 +810,7 @@ if (any(!proj.env$development_factors$KEY %in% proj.env$MonthlyProjections$KEY))
 # Check that all keys in the projection table are present in the development factors
 if (any(!proj.env$MonthlyProjections$KEY %in% proj.env$development_factors$KEY)) {
   proj.env$missing_keys <- unique(proj.env$MonthlyProjections$KEY[!proj.env$MonthlyProjections$KEY %in% proj.env$development_factors$KEY])
-  warning(paste(
+  stop(paste(
     "The following keys in the projection table are not present in the development factors table:\n",
     paste(proj.env$missing_keys, collapse = "\n")
     )
@@ -846,11 +832,6 @@ proj.env$t_Loss <- proj.env$MonthlyProjections %>%
   select(
     # Primary Key
     KEY,
-    # Unique Key
-    Program_Name,
-    Primary_LOB,
-    Effective_Date,
-    Suffix,
     Effective_Date,
     MONTH,
     # Attribute
@@ -864,7 +845,11 @@ proj.env$t_Loss <- proj.env$MonthlyProjections %>%
 
 # Join the development factors
 proj.env$t_Loss_2 <- proj.env$t_Loss %>%
-  full_join(proj.env$DEVS_rev, by = c("KEY"), relationship = "many-to-many") %>%
+  full_join(
+    proj.env$DEVS_rev, 
+    by = c("KEY"), 
+    relationship = "many-to-many" # because need the full vector for each incurred month
+  ) %>%
   dplyr::mutate(
     # This column contains the month for the paid and reported losses
     LAG_date = MONTH %m+% LAG_ACCMONTH,
@@ -879,10 +864,8 @@ proj.env$t_Loss_2 <- proj.env$t_Loss %>%
   # Sum across loss months because it's irrelevant which EP month it was sourced from,
   # rather only when the loss is paid/reported
   group_by(
-    Program_Name,
-    Primary_LOB,
+    KEY,
     Effective_Date,
-    Suffix,
     Total_Earned_Partic,
     LAG_date
   ) %>%
@@ -907,20 +890,25 @@ proj.env$t_Loss_2 <- proj.env$t_Loss %>%
   ) %>%
   ungroup() %>% # ungroup required here because it won't allow removing a column in the group_by list above
   # Remove columns that won't be imported
-  select(-Total_Earned_Partic)
+  select(
+    -Total_Earned_Partic,
+    -Effective_Date
+  )
 
-proj.env$MonthlyProjections <- proj.env$MonthlyProjections %>% left_join(proj.env$t_Loss_2, by = c(
-  "Program_Name",
-  "Primary_LOB",
-  "Effective_Date",
-  "Suffix",
-  "MONTH" = "LAG_date"
-))
+proj.env$MonthlyProjections <- proj.env$MonthlyProjections %>% 
+  left_join(
+    proj.env$t_Loss_2,
+    by = c(
+      "KEY",
+      "MONTH" = "LAG_date"
+    )
+  )
 ```
 
 The following is a check to ensure the columns for paid and reported losses sum to the total undeveloped earned premium. There may be slight deviances due to the different calculations involved with each field.
 
 ```{r, Validate Losses}
+# TODO: Make this throw an error when fails?
 proj.env$Check_EP_Undev_Losses <- proj.env$MonthlyProjections %>%
   group_by(KEY) %>%
   summarize(
@@ -944,19 +932,112 @@ proj.env$MonthlyProjections <- proj.env$MonthlyProjections %>%
     ULAE_Total = EP_To_Date * ULAE_Perc,
     Reins_Broker_Comm_Total = EP_To_Date * Reins_Broker_Perc,
     Expenses_Total = EP_To_Date * Expenses_Perc,
-    # These should be removed and just read from Treaty table
-    LALAE_Paid_Total_No_Improv = EP_Undev_Paid * LALAE_Ratio_No_Improv,
-    LALAE_Paid_Total_Half_Improv = EP_Undev_Paid * LALAE_Ratio_Half_Improv,
-    LALAE_Paid_Total_Break_Even = EP_Undev_Paid * LALAE_Ratio_Break_Even,
-    LALAE_Reported_Total_No_Improv = EP_Undev_Reported * LALAE_Ratio_No_Improv,
-    LALAE_Reported_Total_Half_Improv = EP_Undev_Reported * LALAE_Ratio_Half_Improv,
-    LALAE_Reported_Total_Break_Even = EP_Undev_Reported * LALAE_Ratio_Break_Even,
-    LALAE_Reserve_No_Improv = LALAE_Ratio_No_Improv * (EP_To_Date - EP_Undev_Paid),
-    LALAE_Reserve_Half_Improv = LALAE_Ratio_Half_Improv * (EP_To_Date - EP_Undev_Paid),
-    LALAE_Reserve_Break_Even = LALAE_Ratio_Break_Even * (EP_To_Date - EP_Undev_Paid),
-    LALAE_IBNR_No_Improv = LALAE_Ratio_No_Improv * (EP_To_Date - EP_Undev_Reported),
-    LALAE_IBNR_Half_Improv = LALAE_Ratio_Half_Improv * (EP_To_Date - EP_Undev_Reported),
-    LALAE_IBNR_Break_Even = LALAE_Ratio_Break_Even * (EP_To_Date - EP_Undev_Reported)
+    # These should just be calculated in valuation workbook
+    LALAE_Paid_Total_No_Improv = LALAE.NoImprovement.NetCorridorsAndCaps * EP_Undev_Paid,
+    LALAE_Paid_Total_Half_Improv = LALAE.HalfImprovement.NetCorridorsAndCaps * EP_Undev_Paid,
+    LALAE_Paid_Total_Break_Even = LALAE.Market.NetCorridorsAndCaps * EP_Undev_Paid,
+    LALAE_Reported_Total_No_Improv = LALAE.NoImprovement.NetCorridorsAndCaps * EP_Undev_Reported,
+    LALAE_Reported_Total_Half_Improv = LALAE.HalfImprovement.NetCorridorsAndCaps * EP_Undev_Reported,
+    LALAE_Reported_Total_Break_Even = LALAE.Market.NetCorridorsAndCaps * EP_Undev_Reported,
+    LALAE_Reserve_No_Improv = LALAE.NoImprovement.NetCorridorsAndCaps * (EP_To_Date - EP_Undev_Paid),
+    LALAE_Reserve_Half_Improv = LALAE.HalfImprovement.NetCorridorsAndCaps * (EP_To_Date - EP_Undev_Paid),
+    LALAE_Reserve_Break_Even = LALAE.Market.NetCorridorsAndCaps * (EP_To_Date - EP_Undev_Paid),
+    LALAE_IBNR_No_Improv = LALAE.NoImprovement.NetCorridorsAndCaps * (EP_To_Date - EP_Undev_Reported),
+    LALAE_IBNR_Half_Improv = LALAE.HalfImprovement.NetCorridorsAndCaps * (EP_To_Date - EP_Undev_Reported),
+    LALAE_IBNR_Break_Even = LALAE.Market.NetCorridorsAndCaps * (EP_To_Date - EP_Undev_Reported)
+  )
+```
+
+### Final Control of Column Names for Output CSV
+```{r, Ensure Field Names Have Not Changed}
+  # Select only the fields needed for the output CSV
+  proj.env$MonthlyProjections <- proj.env$MonthlyProjections %>%
+  rename(
+    # Program_Name = Program_Name,
+    # Carrier = Carrier,
+    # Primary_LOB = Primary_LOB,
+    # Secondary_LOB = Secondary_LOB,
+    # Contact.Person. = Contact,
+    # Suffix = Suffix,
+    # Admitted...E.S. = AdmittedAndES,
+    # Reinsurance.Panel. = Panel,
+    # States. = States,
+    # Lookup is concatenated KEY + YM
+    # Key.Limits. = KeyLimits,
+    # ALAE_ULAE_In_Ceded_LR = ULAEorALAE,
+    # Collateral.Terms. = CollateralTerms,
+    Treaty = KEY,
+    Month = MONTH,
+    Effective_Date = Effective_Date,
+    Expiration_Date = Expiration_Date,
+    Carrier.Retention. = CarrierRetention,
+    Policy_Length = Policy_Length,
+    RA_or_LOD = RA_or_LOD,
+    Total_Subject_Premium = Total_Subject_Premium,
+    Target_Participation = TargetParticipationPercentage,
+    Target.Participation. = TargetParticipation,
+    Inherited_UEPR = Inherited_UEPR,
+    Reins_Broker_Perc = Reins_Broker_Perc,
+    Expenses_Perc = Expenses_Perc,
+    ULAE_Perc = ULAEOutsideCedingCommission,
+    LLAE.Corridor.Attachment.LR. = LLAECorridorAttachmentLR,
+    LLAE.Corridor.End.LR. = LLAECorridorEndLR,
+    LLAE.Corridor...Retained. = LLAECorridorRetained,
+    Loss.Ratio.Cap. = LossRatioCap,
+    Minimum.Ceding.Commission. = MinimumCedingCommission,
+    Provisional.Ceding.Commission. = ProvisionalCedingCommission,
+    Maximum.Ceding.Commission. = MaximumCedingCommission,
+    Minimum.Ceding.Commission.LLAE.Ratio. = MinimumCedingCommissionLLAERatio,
+    Provisional.Ceding.Commission.LLAE.Ratio. = ProvisionalCedingCommissionLLAERatio,
+    Maximum.Ceding.Commission.LLAE.Ratio. = MaximumCedingCommissionLLAERatio,
+    WP_Monthly_Data = WP_Monthly_Data,
+    EP_Monthly_Data = EP_Monthly_Data,
+    Loss_Paid_Monthly_Data = Loss_Paid_Monthly_Data,
+    ALAE_Paid_Monthly_Data = ALAE_Paid_Monthly_Data,
+    ULAE_Paid_Monthly_Data = ULAE_Paid_Monthly_Data,
+    Loss_Case_Reserve_Data = Loss_Case_Reserve_Data,
+    ALAE_Case_Reserve_Data = ALAE_Case_Reserve_Data,
+    ULAE_Case_Reserve_Data = ULAE_Case_Reserve_Data,
+    IUEPR_Total = IUEPR_Total,
+    IUEPR_Perc = IUEPR_Perc,
+    IUEPR_Month = IUEPR_Monthly,
+    WP_Total = WP_Total,
+    WP_Perc = WP_Perc,
+    WP_Monthly = WP_Monthly,
+    EP_Monthly = EP_Monthly,
+    EP_Monthly_Incl_IUEPR = EP_Monthly_Incl_IUEPR,
+    EP_To_Date = EP_To_Date,
+    WP_To_Date = WP_To_Date,
+    UEPR = UEPR,
+    DUEPR_Balance = DUEPR_Balance,
+    EP_Undev_Paid = EP_Undev_Paid,
+    EP_Undev_Reported = EP_Undev_Reported,
+    ULAE_Total = ULAE_Total,
+    Reins_Broker_Comm_Total = Reins_Broker_Comm_Total,
+    Expenses_Total = Expenses_Total,
+    Est_Payout_Duration_Yrs = Duration.Estimated,
+    Prior_No_Impr_Gross_LALAE_Ratio_Excl_Corr = LALAE.NoImprovement.Gross,
+    Prior_Half_Impr_Gross_LALAE_Ratio_Excl_Corr = LALAE.HalfImprovement.Gross,
+    Industry.Gross.LALAE.Ratio..excluding.corridor..LR.cap..etc... = LALAE.Industry.Gross,
+    LALAE_Ratio_No_Improv = LALAE.NoImprovement.NetCorridorsAndCaps,
+    LALAE_Ratio_Half_Improv = LALAE.HalfImprovement.NetCorridorsAndCaps,
+    LALAE_Ratio_Break_Even = LALAE.Market.NetCorridorsAndCaps,
+    Prior.No.Improvement.Combined.Ratio. = CR.NoImprovement,
+    Prior.Half.Improvement.Combined.Ratio. = CR.HalfImprovement,
+    Industry.Combined.Ratio. = CR.Industry,
+    Breakeven.Check..should.be.100.. = CR.Market,
+    LALAE_Paid_Total_No_Improv = LALAE_Paid_Total_No_Improv,
+    LALAE_Paid_Total_Half_Improv = LALAE_Paid_Total_Half_Improv,
+    LALAE_Paid_Total_Break_Even = LALAE_Paid_Total_Break_Even,
+    LALAE_Reported_Total_No_Improv = LALAE_Reported_Total_No_Improv,
+    LALAE_Reported_Total_Half_Improv = LALAE_Reported_Total_Half_Improv,
+    LALAE_Reported_Total_Break_Even = LALAE_Reported_Total_Break_Even,
+    LALAE_Reserve_No_Improv = LALAE_Reserve_No_Improv,
+    LALAE_Reserve_Half_Improv = LALAE_Reserve_Half_Improv,
+    LALAE_Reserve_Break_Even = LALAE_Reserve_Break_Even,
+    LALAE_IBNR_No_Improv = LALAE_IBNR_No_Improv,
+    LALAE_IBNR_Half_Improv = LALAE_IBNR_Half_Improv,
+    LALAE_IBNR_Break_Even = LALAE_IBNR_Break_Even,
   )
 ```
 
