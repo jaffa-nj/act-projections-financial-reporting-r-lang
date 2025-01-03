@@ -24,9 +24,11 @@ params:
   database_name:
     input: text
     label: Database file containing monthly data
+    value: ""
   provider_server_name:
     input: text
     label: "Provider Server Name"
+    value: ""
   provider_port:
     input: numeric
     label: "Provider Port"
@@ -34,12 +36,18 @@ params:
   provider_database_name:
     input: text
     label: "Provider Database Name"
+    value: ""
   provider_username:
     input: text
     label: "Provider Username"
+    value: ""
   provider_password:
     input: text
     label: "Provider Password"
+    value: ""
+  underwriting_lalaes:
+    input: text
+    label: "Underwriting LALAE CSV file"
     value: ""
   development_factors:
     input: text
