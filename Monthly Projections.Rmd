@@ -337,6 +337,7 @@ proj.env$our_db <- DBI::dbReadTable(
   params$source_data_table_name
 ) %>%
   mutate(
+    nre_feed = tolower(nre_feed),
     bordereaux_month = as.Date(bordereaux_month),
     v_created = as.Date(v_created),
     query_date = as.Date(query_date)
@@ -447,16 +448,27 @@ Load the keys we use for projections
 proj.env$key_translations <- read.csv(
   paste(params$reporting_path, params$key_map, sep = ""),
   stringsAsFactors = FALSE
-)
+) %>%
+  dplyr::mutate(
+    nre_feed = tolower(nre_feed)
+  )
 ```
 
 Validate the key mappings by checking the source table.
 
 ```{r, Check Mappings have matching keys}
-# Check that all keys to map exist in the treaty table
-if (any(!proj.env$key_translations$nre_feed %in% proj.env$our_db$nre_feed & !proj.env$key_translations$treaty_year %in% proj.env$our_db$treaty_year)) {
-  stop("Keys in the key_translations table are not present in the experience table.")
-}
+  # Check if there are any rows in our_db_filtered that do not have matching keys in key_translations
+  proj.env$missing_keys <- proj.env$our_db_filtered %>%
+    anti_join(proj.env$key_translations, by = c("nre_feed", "treaty_year")) %>%
+    select(nre_feed, treaty_year) %>%
+    distinct()
+
+  if (nrow(proj.env$missing_keys) > 0) {
+    stop(paste(
+      "The following keys in the experience table are not present in the key_translations table:\n",
+      paste(proj.env$missing_keys$nre_feed, proj.env$missing_keys$treaty_year, collapse = "\n")
+    ))
+  }
 ```
 
 Consolidate (Aggregate) source data according to our keys
@@ -522,7 +534,12 @@ Validate the keys in the experience table exist in the treaty position table.
 ```{r, Check experience keys match treaty position keys}
 # Check that all keys to map exist in the treaty table
 if (any(!proj.env$vel_df3$KEY %in% proj.env$treaty_positions$KEY)) {
-  stop("Keys in the experience table are not present in the treaty position table.")
+  proj.env$missing_keys <- unique(proj.env$vel_df3$KEY[!proj.env$vel_df3$KEY %in% proj.env$treaty_positions$KEY])
+  stop(paste(
+    "The following keys in the experience table are not present in the treaty_positions table:\n",
+    paste(proj.env$missing_keys, collapse = "\n")
+    )
+  )
 }
 ```
 
