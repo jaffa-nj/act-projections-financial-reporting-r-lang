@@ -285,6 +285,54 @@ proj.env$treaty_positions <- DBI::dbGetQuery(proj.env$sqlconn, paste(readLines("
 # Close the database connection
 DBI::dbDisconnect(proj.env$sqlconn)
 
+proj.env$underwriting_lalaes <- read.csv(
+  paste(params$reporting_path, params$underwriting_lalaes, sep = ""),
+  stringsAsFactors = FALSE
+) %>%
+  select(
+    KEY,
+    Duration.Estimated,
+    LALAE.NoImprovement.Gross,
+    LALAE.HalfImprovement.Gross,
+    LALAE.Market.Gross,
+    LALAE.Industry.Gross,
+    LALAE.NoImprovement.NetCorridorsAndCaps,
+    LALAE.HalfImprovement.NetCorridorsAndCaps,
+    LALAE.Market.NetCorridorsAndCaps,
+    LALAE.Industry.NetCorridorsAndCaps,
+    CR.NoImprovement,
+    CR.HalfImprovement,
+    CR.Market,
+    CR.Industry,
+  )
+
+# Verify that all keys in the underwriting_lalaes table are present in the treaty_positions table
+if (any(!proj.env$underwriting_lalaes$KEY %in% proj.env$treaty_positions$KEY)) {
+  proj.env$missing_keys <- unique(proj.env$underwriting_lalaes$KEY[!proj.env$underwriting_lalaes$KEY %in% proj.env$treaty_positions$KEY])
+  stop(paste(
+    "The following keys in the underwriting_lalaes table are not present in the treaty_positions table:\n",
+    paste(proj.env$missing_keys, collapse = "\n")
+    )
+  )
+}
+
+if (any(!proj.env$treaty_positions$KEY %in% proj.env$underwriting_lalaes$KEY)) {
+  proj.env$missing_keys <- unique(proj.env$treaty_positions$KEY[!proj.env$treaty_positions$KEY %in% proj.env$underwriting_lalaes$KEY])
+  stop(paste(
+    "The following keys in the treaty_positions table are not present in the underwriting_lalaes table:\n",
+    paste(proj.env$missing_keys, collapse = "\n")
+    )
+  )
+}
+
+# Join the underwriting_lalaes table to the treaty_positions table
+# These are values that our underwriting team is responsible for, and may not be maintained or updated in vendor table in a timely fashion
+proj.env$treaty_positions <- proj.env$treaty_positions %>%
+  inner_join(
+    proj.env$underwriting_lalaes,
+    by = c("KEY")
+  )
+
 proj.env$development_factors <- read.csv(
   paste(params$reporting_path, params$development_factors, sep = ""),
   stringsAsFactors = FALSE
