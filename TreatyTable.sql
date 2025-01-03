@@ -26,33 +26,16 @@ WITH FixProgramYears AS
 , CleanUpData AS
 (
     SELECT
-        [ConcatenatedKey] = 
-            UPPER(
-                FORMATMESSAGE(
-                    '%s_%s_%s_%s',
-                    CASE
-                        WHEN p.[Name] = 'LP RISK TRISURA' THEN 'LPRISK'
-                        WHEN p.[Name] = 'PROGRAM BROKERAGE CORP' THEN 'PBC'
-                        WHEN p.[Name] LIKE 'REDSTONE%' THEN 'REDSTONE'
-                        WHEN p.[Name] = 'TRADESMAN HAB GL' THEN 'TRADESMAN HAB'
-                        WHEN p.[Name] LIKE 'WHITEHILL%' THEN 'WHITEHILL(SUTTON)'
-                        ELSE p.[Name]
-                    END,
-                    COALESCE(jr.[PrimaryLOB], 'unknown'),
-                    CONVERT(nvarchar(6), jr.[EffectiveDate], 112),
-                    'A'
-                )
-            ), -- lob.[Name], [StartDate]
         [StatusID] = p.[StatusID],
         [Status] = s.[Name],
         [ProgramID] = p.[ID],
         [Name] = p.[Name],
         [ProgramYearID] = py.[ID],
-        [EffectiveDate] = jr.[EffectiveDate], --py.[StartDate], -- PY Table looks WRONG
-        [ExpirationDate] = jr.[ExpirationDate], -- py.[EndDate], -- PY Table looks WRONG
+        [EffectiveDate] = COALESCE(jr.[EffectiveDate], py.[StartDate]), -- PY Table looks WRONG
+        [ExpirationDate] = COALESCE(jr.[ExpirationDate], py.[EndDate]), -- PY Table looks WRONG
         [Panel] = jr.[Panel], -- Can we get this added? Is it already available?
         [Carrier] = c.[Name],
-        [PrimaryLOB] = jr.[PrimaryLOB], -- lob.[Name], -- LOB table looks WRONG
+        [PrimaryLOB] = COALESCE(jr.[PrimaryLOB], lob.[Name]), -- LOB table looks WRONG
         [SecondaryLOB] = jr.[SecondaryLOB], -- Can we get this added? Is it already available?
         [CarrierRetention] = jr.[CarrierRetention], -- Can we get this added? Is it already available?
         [States] = jr.[States], -- Can we get this added? Is it already available?
@@ -80,8 +63,6 @@ WITH FixProgramYears AS
         [ULAEorALAE] = jr.[ULAEorALAE], -- Can we get this added? Is it already available?
         [ReinsuranceBrokerCommission] = py.[ReinsBrokPerc], -- jr.[ReinsuranceBrokerCommission], -- Verified to match
         [SeparateExpenses] = jr.[SeparateExpenses], -- Can we get this added? Is it already available?
-        -- how can we get frequency and arrears info?
-        [CollateralTerms] = FORMATMESSAGE('%s Sch. F%s%s UEPR', FORMAT([SchedFCollatMult], 'P'), CHAR(10), FORMAT([UnearnedPremResFactor], 'P')), -- % of Sch F and UEPR; frequency and arrears
         --jr.[CollateralTerms],
         [ScheduleFMultiple] = py.[SchedFCollatMult], -- jr.[ScheduleFMultiple],  -- In most cases, it looks like JR table is wrong
         [UEPRMultiple] = jr.[UEPRMultiple], --py.[UnearnedPremResFactor], -- PY Table looks wrong
@@ -112,10 +93,11 @@ WITH FixProgramYears AS
         [CorridorEnd] = jr.[CorridorEnd], -- Can we get this added? Is it already available?
         [LLAECorridorEndLR] = jr.[LLAECorridorEndLR], -- Can we get this added? Is it already available?
         [LLAECorridorRetained] = jr.[LLAECorridorRetained], -- Can we get this added? Is it already available?
+        [Contact] = jr.[Contact] -- This should be in CRM DB
+/*
         -- These come from our team
         [EstimatedPayoutDuration] = jr.[EstimatedPayoutDuration],
         [Suffix] = jr.[Suffix], --Alpha indicator for treaty differentiation (mostly years)
-        [Contact] = jr.[Contact], -- This should be in CRM DB
         [Differentiator] = jr.[Differentiator], --comments from UW on what makes this ceding co stand out
         [Narrative] = jr.[Narrative], --recommendation from UW
         [Actuary] = jr.[Actuary:], -- is this the breakeven lalae?
@@ -132,6 +114,7 @@ WITH FixProgramYears AS
         [ActuarialViewpoint] = jr.[ActuarialViewpoint],
         [PriorNoImprovmentNetLALAERatio] = jr.[PriorNoImprovmentNetLALAERatio],
         [PriorHalfImprovmentNetLALAERatio] = jr.[PriorHalfImprovmentNetLALAERatio]
+*/
     --SELECT *
     FROM [dbo].[Program] p 
         INNER JOIN [dbo].[ProgramYear] py ON p.[ID] = py.[ProgramID] -- [FixProgramYears]
@@ -146,7 +129,23 @@ WITH FixProgramYears AS
         -- Program 52 does not have an correct key for ProgramYears???
 )
 SELECT
-    [ConcatenatedKey] = [ConcatenatedKey],
+    [ConcatenatedKey] = 
+        UPPER(
+            FORMATMESSAGE(
+                '%s_%s_%s_%s',
+                CASE
+                    WHEN MAX([Name]) = 'LP RISK TRISURA' THEN 'LPRISK'
+                    WHEN MAX([Name]) = 'PROGRAM BROKERAGE CORP' THEN 'PBC'
+                    WHEN MAX([Name]) LIKE 'REDSTONE%' THEN 'REDSTONE'
+                    WHEN MAX([Name]) = 'TRADESMAN HAB GL' THEN 'TRADESMAN HAB'
+                    WHEN MAX([Name]) LIKE 'WHITEHILL%' THEN 'WHITEHILL(SUTTON)'
+                    ELSE MAX([Name])
+                END,
+                COALESCE([PrimaryLOB], 'unknown'),
+                CONVERT(nvarchar(6), [EffectiveDate], 112),
+                'A'
+            )
+        ), -- lob.[Name], [StartDate]
     [StatusID] = [StatusID],
     [Status] = [Status],
     [ProgramID] = MAX([ProgramID]),
@@ -177,6 +176,7 @@ SELECT
     [ALAE] = [ALAE],
     [ALAETreatmentCapped] = [ALAETreatmentCapped],
     [ALAETreatmentAtActual] = [ALAETreatmentAtActual],
+    [AdmittedAndES] = NULLIF(IIF([Admitted] = 'Yes', 'Admitted', '') + IIF([Admitted] = [ES] AND [ES] = 'Yes', ' / ', '') + IIF([ES] = 'Yes', 'ES', ''), ''),
     [Admitted] = [Admitted],
     [ES] = [ES],
     [InheritedUEPROutsideParticipation] = [InheritedUEPROutsideParticipation],
@@ -184,7 +184,8 @@ SELECT
     [ULAEorALAE] = [ULAEorALAE],
     [ReinsuranceBrokerCommission] = [ReinsuranceBrokerCommission],
     [SeparateExpenses] = MAX([SeparateExpenses]),
-    [CollateralTerms] = [CollateralTerms],
+    -- how can we get frequency and arrears info?
+    [CollateralTerms] = FORMATMESSAGE('%s Sch. F%s%s UEPR', FORMAT([ScheduleFMultiple], 'P'), CHAR(10), FORMAT([UEPRMultiple], 'P')), -- % of Sch F and UEPR; frequency and arrears
     [ScheduleFMultiple] = [ScheduleFMultiple],
     [UEPRMultiple] = [UEPRMultiple],
     [CollateralTerms_1] = [CollateralTerms_1],
@@ -210,9 +211,11 @@ SELECT
     [CorridorEnd] = [CorridorEnd],
     [LLAECorridorEndLR] = [LLAECorridorEndLR],
     [LLAECorridorRetained] = [LLAECorridorRetained],
+    [Contact] = [Contact]
+/*
+    -- These come from our UW team
     [EstimatedPayoutDuration] = [EstimatedPayoutDuration],
     [Suffix] = [Suffix],
-    [Contact] = [Contact],
     [Differentiator] = [Differentiator],
     [Narrative] = [Narrative],
     [Actuary] = [Actuary],
@@ -229,15 +232,15 @@ SELECT
     [ActuarialViewpoint] = MAX([ActuarialViewpoint]),
     [PriorNoImprovmentNetLALAERatio] = [PriorNoImprovmentNetLALAERatio],
     [PriorHalfImprovmentNetLALAERatio] = [PriorHalfImprovmentNetLALAERatio]
+*/
 FROM [CleanUpData]
+--WHERE [EffectiveDate] <= '2024-12-31'
 /*
-WHERE [StartDate] <= SYSDATETIME() --'2024-09-30'
     -- AND lob.[ID] IS NULL -- Issues needing Northern Re to fix
     -- AND p.[Name] = 'ATM'
     AND jr.[Name] IS NULL
 */
 GROUP BY 
-    [ConcatenatedKey],
     [StatusID],
     [Status],
     [EffectiveDate],
@@ -265,7 +268,6 @@ GROUP BY
     [KeyLimits],
     [ULAEorALAE],
     [ReinsuranceBrokerCommission],
-    [CollateralTerms],
     [ScheduleFMultiple],
     [UEPRMultiple],
     [CollateralTerms_1],
@@ -291,9 +293,11 @@ GROUP BY
     [CorridorEnd],
     [LLAECorridorEndLR],
     [LLAECorridorRetained],
+    [Contact]
+/*
+    -- These come from our UW team
     [EstimatedPayoutDuration],
     [Suffix],
-    [Contact],
     [Differentiator],
     [Narrative],
     [Actuary],
@@ -308,5 +312,6 @@ GROUP BY
     [PriorHalfImprovementGrossLALAERatio],
     [PriorNoImprovmentNetLALAERatio],
     [PriorHalfImprovmentNetLALAERatio]
+*/
 ORDER BY 1
 ;
