@@ -1014,7 +1014,6 @@ proj.env$MonthlyProjections <- proj.env$MonthlyProjections %>%
     # Key.Limits. = KeyLimits,
     # ALAE_ULAE_In_Ceded_LR = ULAEorALAE,
     # Collateral.Terms. = CollateralTerms,
-    Treaty = KEY,
     Month = MONTH,
     Carrier.Retention. = CarrierRetention,
     Policy_Length = Policy_Length,
@@ -1045,7 +1044,7 @@ proj.env$MonthlyProjections <- proj.env$MonthlyProjections %>%
     Breakeven.Check..should.be.100.. = CR.Market,
   ) %>%
   select(
-    Treaty,
+    KEY,
     Month,
     Effective_Date,
     Expiration_Date,
