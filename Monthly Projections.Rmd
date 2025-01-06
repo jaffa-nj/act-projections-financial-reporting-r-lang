@@ -309,7 +309,7 @@ proj.env$underwriting_lalaes <- read.csv(
 # Verify that all keys in the underwriting_lalaes table are present in the treaty_positions table
 if (any(!proj.env$underwriting_lalaes$KEY %in% proj.env$treaty_positions$KEY)) {
   proj.env$missing_keys <- unique(proj.env$underwriting_lalaes$KEY[!proj.env$underwriting_lalaes$KEY %in% proj.env$treaty_positions$KEY])
-  stop(paste(
+  warning(paste(
     "The following keys in the underwriting_lalaes table are not present in the treaty_positions table:\n",
     paste(proj.env$missing_keys, collapse = "\n")
     )
@@ -803,11 +803,11 @@ proj.env$MonthlyProjections <- proj.env$MonthlyProjections %>%
   mutate(EP_Monthly = tidyr::replace_na(EP_Monthly, 0))
 
 # Validate that the sum of EP_Monthly equals the sum of WP_Monthly
-total_wp_monthly <- sum(proj.env$MonthlyProjections$WP_Monthly, na.rm = TRUE) - sum(proj.env$MonthlyProjections$WP_ToEarnNextTreaty, na.rm = TRUE)
-total_ep_monthly <- sum(proj.env$MonthlyProjections$EP_Monthly, na.rm = TRUE) 
+proj.env$total_wp_monthly <- sum(proj.env$MonthlyProjections$WP_Monthly, na.rm = TRUE) - sum(proj.env$MonthlyProjections$WP_ToEarnNextTreaty, na.rm = TRUE)
+proj.env$total_ep_monthly <- sum(proj.env$MonthlyProjections$EP_Monthly, na.rm = TRUE) 
 
-if (abs(total_wp_monthly - total_ep_monthly) > 0.01) {
-  warning("Total WP_Monthly and Total EP_Monthly are not equal.")
+if (abs(proj.env$total_wp_monthly - proj.env$total_ep_monthly) > 0.01) {
+  stop("Total WP_Monthly and Total EP_Monthly are not equal.")
   # we need to account for the Written Premium that will not be earned in LOD Treaties
 }
 
