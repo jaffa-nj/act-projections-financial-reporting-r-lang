@@ -760,8 +760,8 @@ proj.env$table1_Earning_Pattern <- proj.env$MonthlyProjections %>%
   ) %>%
   rowwise() %>%
   mutate(
-    EP_Months = list(seq.Date(WP_Month, WP_Month %m+% Policy_Length - months(1), by = "month")),
-    EP_Month_Index = list(seq_along(EP_Months))
+    EP_Months = list(seq.Date(WP_Month, WP_Month %m+% Policy_Length, by = "month")),
+    EP_Month_Index = list(seq_along(EP_Months) - 1)
   ) %>%
   tidyr::unnest(cols = c(EP_Months, EP_Month_Index)) %>%
   rename(
