@@ -30,7 +30,7 @@ params:
     label: Read Treaty Positions from CSV instead of Provider DB
     value: false
   treaty_positions:
-    input: file
+    input: text
     label: "Treaty Positions CSV file"
     value: ""
   provider_server_name:
@@ -270,7 +270,6 @@ overrides_table contains confirmed revisions to the monthly submission data reco
 
 ```{r, Load Data}
 # Import data and ensure strings aren't recognized as factors
-
 if (params$treaty_csv) {
   # Import data and ensure strings aren't recognized as factors
   proj.env$treaty_positions <- read.csv(
@@ -673,8 +672,6 @@ This step projects a monthly earned pattern to the Inherited UEPR, resulting in 
 This only applies to LOD treaties.
 
 ```{r, Project Monthly Earned Pattern against Inherited UEPR}
-
-
 # Project IUEPR by month using Inherited_UEPR_Pattern function
 proj.env$MonthlyProjections <- proj.env$MonthlyProjections %>%
   mutate(
@@ -730,6 +727,12 @@ proj.env$WP_Proj_vs_Rept <- proj.env$MonthlyProjections %>%
 proj.env$MonthlyProjections <- proj.env$MonthlyProjections %>%
   mutate(
     WP_Monthly = datareplace(WP_Monthly, WP_Monthly_Data),
+    # Amount of Written Premium that will be earned in next treaty (LOD only)
+    WP_ToEarnNextTreaty = ifelse(
+      RA_or_LOD == "LOD",
+      WP_Monthly * (as.numeric(MonthsNewPolicyInforceAfterTreatyEnds, "months") / as.numeric(Policy_Length, "months")),
+      0
+    )
   )
 ```
 
@@ -760,7 +763,6 @@ This step projects share of monthly earned premium and revises projections with 
 Two temporary tables are created to form and calculate the sumproduct of earned premium for each month, which are then joined back to MonthlyProjections.
 
 ```{r, Project Business Proportion of Earned Premium}
-
 # Create first table containing all rows in MonthlyProjections dataframe
 proj.env$table1_Earning_Pattern <- proj.env$MonthlyProjections %>%
   select(
