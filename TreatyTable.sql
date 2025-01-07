@@ -115,7 +115,7 @@ WITH FixProgramYears AS
         [PriorHalfImprovmentNetLALAERatio] = jr.[PriorHalfImprovmentNetLALAERatio]
 */
     --SELECT *
-    FROM [dbo].[Program] p 
+    FROM [dbo].[Program] p
         INNER JOIN [dbo].[ProgramYear] py ON p.[ID] = py.[ProgramID] -- [FixProgramYears]
         INNER JOIN [dbo].[refStatus] s on p.[StatusID] = s.[ID]
         INNER JOIN [dbo].[refBasis] b on p.[BasisID] = b.[ID]
@@ -128,7 +128,7 @@ WITH FixProgramYears AS
         -- Program 52 does not have an correct key for ProgramYears???
 )
 SELECT
-    [ConcatenatedKey] = 
+    [ConcatenatedKey] =
         UPPER(
             FORMATMESSAGE(
                 '%s_%s_%s_%s',
@@ -239,7 +239,7 @@ FROM [CleanUpData]
     -- AND p.[Name] = 'ATM'
     AND jr.[Name] IS NULL
 */
-GROUP BY 
+GROUP BY
     [StatusID],
     [Status],
     [EffectiveDate],

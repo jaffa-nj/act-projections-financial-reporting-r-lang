@@ -134,19 +134,19 @@ datareplace <- function(fallback, new_data) {
   ifelse(is.na(new_data), as.numeric(fallback), as.numeric(new_data))
 }
 
-  # Return the number of months between two dates
+# Return the number of months between two dates
 months_between <- function(startDate, endDate) {
   if (length(startDate) == 1) startDate <- rep(startDate, length(endDate))
   if (length(endDate) == 1) endDate <- rep(endDate, length(startDate))
   if (length(startDate) != length(endDate)) stop("Length of startDate and endDate must be the same.")
-  
+
   num_months <- mapply(function(s, e) {
     if (lubridate::day(s) == 1 && lubridate::day(e) == lubridate::day(lubridate::ceiling_date(e, "month") - 1)) {
       e <- e + lubridate::days(1)
     }
     lubridate::interval(s, e) %/% months(1)
   }, startDate, endDate)
-  
+
   return(num_months)
 }
 
@@ -161,30 +161,30 @@ convert_numeric_to_period <- function(x, p) {
     remainder <- x - i
     y <- lubridate::period(0)
     switch(p,
-           "years" = {
-             y <- y + lubridate::years(i)
-             if (remainder > 0) y <- y + convert_numeric_to_period(remainder * 12, "months")
-           },
-           "months" = {
-             y <- y + months(i)
-             if (remainder > 0) y <- y + convert_numeric_to_period(remainder * 30.44, "days")
-           },
-           "days" = {
-             y <- y + lubridate::days(i)
-             if (remainder > 0) y <- y + convert_numeric_to_period(remainder * 24, "hours")
-           },
-           "hours" = {
-             y <- y + lubridate::hours(i)
-             if (remainder > 0) y <- y + convert_numeric_to_period(remainder * 60, "minutes")
-           },
-           "minutes" = {
-             y <- y + lubridate::minutes(i)
-             if (remainder > 0) y <- y + convert_numeric_to_period(remainder * 60, "seconds")
-           },
-           "seconds" = {
-             y <- y + lubridate::seconds(i)
-             # no need to go further, we don't care about milliseconds
-           }
+      "years" = {
+        y <- y + lubridate::years(i)
+        if (remainder > 0) y <- y + convert_numeric_to_period(remainder * 12, "months")
+      },
+      "months" = {
+        y <- y + months(i)
+        if (remainder > 0) y <- y + convert_numeric_to_period(remainder * 30.44, "days")
+      },
+      "days" = {
+        y <- y + lubridate::days(i)
+        if (remainder > 0) y <- y + convert_numeric_to_period(remainder * 24, "hours")
+      },
+      "hours" = {
+        y <- y + lubridate::hours(i)
+        if (remainder > 0) y <- y + convert_numeric_to_period(remainder * 60, "minutes")
+      },
+      "minutes" = {
+        y <- y + lubridate::minutes(i)
+        if (remainder > 0) y <- y + convert_numeric_to_period(remainder * 60, "seconds")
+      },
+      "seconds" = {
+        y <- y + lubridate::seconds(i)
+        # no need to go further, we don't care about milliseconds
+      }
     )
   }
   return(y)
@@ -257,7 +257,6 @@ EarnedPattern <- function(k, PLEN) {
     TRUE ~ 0
   )
 }
-
 ```
 
 ### Load Data
@@ -287,12 +286,12 @@ if (params$treaty_csv) {
     )
 } else {
   # Establish a connection to the Microsoft SQL Database
-  proj.env$sqlconn <- DBI::dbConnect(odbc::odbc(), 
-            Driver = "ODBC Driver 17 for SQL Server", 
-            Server = paste0(params$provider_server_name, ",", params$provider_port),
-            Database = params$provider_database_name, 
-            UID = params$provider_username, 
-            PWD = params$provider_password
+  proj.env$sqlconn <- DBI::dbConnect(odbc::odbc(),
+    Driver = "ODBC Driver 17 for SQL Server",
+    Server = paste0(params$provider_server_name, ",", params$provider_port),
+    Database = params$provider_database_name,
+    UID = params$provider_username,
+    PWD = params$provider_password
   )
 
   # Query the data from the TreatyTable
@@ -336,8 +335,7 @@ if (params$treaty_csv) {
     warning(paste(
       "The following keys in the underwriting_lalaes table are not present in the treaty_positions table:\n",
       paste(proj.env$missing_keys, collapse = "\n")
-      )
-    )
+    ))
   }
 
   if (any(!proj.env$treaty_positions$KEY %in% proj.env$underwriting_lalaes$KEY)) {
@@ -345,8 +343,7 @@ if (params$treaty_csv) {
     stop(paste(
       "The following keys in the treaty_positions table are not present in the underwriting_lalaes table:\n",
       paste(proj.env$missing_keys, collapse = "\n")
-      )
-    )
+    ))
   }
 
   # Join the underwriting_lalaes table to the treaty_positions table
@@ -530,18 +527,18 @@ proj.env$key_translations <- read.csv(
 Validate the key mappings by checking the source table.
 
 ```{r, Check Mappings have matching keys}
-  # Check if there are any rows in our_db_filtered that do not have matching keys in key_translations
-  proj.env$missing_keys <- proj.env$our_db_filtered %>%
-    anti_join(proj.env$key_translations, by = c("nre_feed", "treaty_year")) %>%
-    select(nre_feed, treaty_year) %>%
-    distinct()
+# Check if there are any rows in our_db_filtered that do not have matching keys in key_translations
+proj.env$missing_keys <- proj.env$our_db_filtered %>%
+  anti_join(proj.env$key_translations, by = c("nre_feed", "treaty_year")) %>%
+  select(nre_feed, treaty_year) %>%
+  distinct()
 
-  if (nrow(proj.env$missing_keys) > 0) {
-    stop(paste(
-      "The following keys in the experience table are not present in the key_translations table:\n",
-      paste(proj.env$missing_keys$nre_feed, proj.env$missing_keys$treaty_year, collapse = "\n")
-    ))
-  }
+if (nrow(proj.env$missing_keys) > 0) {
+  stop(paste(
+    "The following keys in the experience table are not present in the key_translations table:\n",
+    paste(proj.env$missing_keys$nre_feed, proj.env$missing_keys$treaty_year, collapse = "\n")
+  ))
+}
 ```
 
 Consolidate (Aggregate) source data according to our keys
@@ -611,8 +608,7 @@ if (any(!proj.env$vel_df3$KEY %in% proj.env$treaty_positions$KEY)) {
   stop(paste(
     "The following keys in the experience table are not present in the treaty_positions table:\n",
     paste(proj.env$missing_keys, collapse = "\n")
-    )
-  )
+  ))
 }
 ```
 
@@ -788,7 +784,7 @@ proj.env$table1_Earning_Pattern <- proj.env$MonthlyProjections %>%
   ungroup()
 
 # Create a additional rows for every month the WP is earned in ( WP_Month through WP_Month + Policy_Length)
-proj.env$table2_Earning_Pattern <- proj.env$table1_Earning_Pattern %>% 
+proj.env$table2_Earning_Pattern <- proj.env$table1_Earning_Pattern %>%
   group_by(
     KEY,
     WP_Month
@@ -838,9 +834,9 @@ proj.env$MonthlyProjections <- proj.env$MonthlyProjections %>%
   )
 
 # Validate that the sum of EP_Monthly equals the sum of WP_Monthly
-proj.env$total_wp_monthly <- sum(proj.env$MonthlyProjections$WP_Monthly, na.rm = TRUE) 
+proj.env$total_wp_monthly <- sum(proj.env$MonthlyProjections$WP_Monthly, na.rm = TRUE)
 proj.env$total_ep_monthly <- (
-  sum(proj.env$MonthlyProjections$EP_Monthly, na.rm = TRUE) 
+  sum(proj.env$MonthlyProjections$EP_Monthly, na.rm = TRUE)
   + sum(proj.env$MonthlyProjections$EP_TransferredToNextTreaty, na.rm = TRUE)
 )
 
@@ -887,8 +883,7 @@ if (any(!proj.env$development_factors$KEY %in% proj.env$MonthlyProjections$KEY))
   warning(paste(
     "The following keys in the development factors table are not present in the projection table:\n",
     paste(proj.env$missing_keys, collapse = "\n")
-    )
-  )
+  ))
 }
 
 # Check that all keys in the projection table are present in the development factors
@@ -897,8 +892,7 @@ if (any(!proj.env$MonthlyProjections$KEY %in% proj.env$development_factors$KEY))
   stop(paste(
     "The following keys in the projection table are not present in the development factors table:\n",
     paste(proj.env$missing_keys, collapse = "\n")
-    )
-  )
+  ))
 }
 ```
 
@@ -930,8 +924,8 @@ proj.env$t_Loss <- proj.env$MonthlyProjections %>%
 # Join the development factors
 proj.env$t_Loss_2 <- proj.env$t_Loss %>%
   full_join(
-    proj.env$DEVS_rev, 
-    by = c("KEY"), 
+    proj.env$DEVS_rev,
+    by = c("KEY"),
     relationship = "many-to-many" # because need the full vector for each incurred month
   ) %>%
   dplyr::mutate(
@@ -979,7 +973,7 @@ proj.env$t_Loss_2 <- proj.env$t_Loss %>%
     -Effective_Date
   )
 
-proj.env$MonthlyProjections <- proj.env$MonthlyProjections %>% 
+proj.env$MonthlyProjections <- proj.env$MonthlyProjections %>%
   left_join(
     proj.env$t_Loss_2,
     by = c(
@@ -1034,8 +1028,8 @@ proj.env$MonthlyProjections <- proj.env$MonthlyProjections %>%
 
 ### Final Control of Column Names for Output CSV
 ```{r, Ensure Field Names Have Not Changed}
-  # Select only the fields needed for the output CSV
-  proj.env$MonthlyProjections <- proj.env$MonthlyProjections %>%
+# Select only the fields needed for the output CSV
+proj.env$MonthlyProjections <- proj.env$MonthlyProjections %>%
   rename(
     # Program_Name = Program_Name,
     # Carrier = Carrier,
@@ -1169,7 +1163,7 @@ proj.env$file_name <- paste0(
   params$reporting_path,
   proj.env$today, "_",
   format(as.Date(params$date_of_valuation, "%Y-%m-%d"), "%Y%m%d"),
-  ifelse(params$treaty_csv,"_CSV",""),
+  ifelse(params$treaty_csv, "_CSV", ""),
   "_VAL_MONTHLY_PROJECTIONS.csv"
 )
 
