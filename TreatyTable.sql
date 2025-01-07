@@ -72,25 +72,24 @@ WITH FixProgramYears AS
         -- Why do we have duplicate fields?
         [CommissionNotes] = jr.[CommissionNotes], -- Can we get this added? Is it already available?
         -- [FlatCommission] = IIF(COALESCE([MinCedComm],0) = COALESCE([ProvCedComm],0) AND COALESCE([MinCedComm],0) = COALESCE([MaxCedComm],0), [MinCedComm], NULL),
-        [FlatCommission] = IIF(COALESCE(jr.[MinimumCedingCommission],0) = COALESCE(jr.[ProvisionalCedingCommission],0) AND COALESCE(jr.[MinimumCedingCommission],0) = COALESCE([MaximumCedingCommission],0), jr.[MinimumCedingCommission], NULL),
         [MinimumCedingCommission] = COALESCE(jr.[MinimumCedingCommission], py.[MinCedComm]), -- Using JR for consistency
-        [MinimumCommission] = COALESCE(jr.[MinimumCommission], py.[MinCedComm]), -- Using JR for consistency
+        --[MinimumCommission] = COALESCE(jr.[MinimumCommission], py.[MinCedComm]), -- Using JR for consistency
         [ProvisionalCedingCommission] = COALESCE(jr.[ProvisionalCedingCommission], py.[ProvCedComm]), -- Using JR for consistency
-        [ProvisionalCommission] = COALESCE(jr.[ProvisionalCommission], py.[ProvCedComm]),  -- Using JR for consistency
+        --[ProvisionalCommission] = COALESCE(jr.[ProvisionalCommission], py.[ProvCedComm]),  -- Using JR for consistency
         [MaximumCedingCommission] = COALESCE(jr.[MaximumCedingCommission], py.[MaxCedComm]), -- Using JR for consistency
-        [MaximumCommission] = COALESCE(jr.[MaximumCommission], py.[MaxCedComm]), -- Using JR for consistency
+        --[MaximumCommission] = COALESCE(jr.[MaximumCommission], py.[MaxCedComm]), -- Using JR for consistency
         [MinimumCedingCommissionLLAERatio] = COALESCE(jr.[MinimumCedingCommissionLLAERatio], py.[MinLossRatio]), -- Using JR for consistency
-        [MinimumLossRatio] = COALESCE(jr.[MinimumLossRatio], py.[MinLossRatio]), -- Using JR for consistency
+        --[MinimumLossRatio] = COALESCE(jr.[MinimumLossRatio], py.[MinLossRatio]), -- Using JR for consistency
         [ProvisionalCedingCommissionLLAERatio] = COALESCE(jr.[ProvisionalCedingCommissionLLAERatio], py.[ProvLossRatioPerc]), -- Using JR for consistency
-        [ProvisionalLossRatio] = COALESCE(jr.[ProvisionalLossRatio], py.[ProvLossRatioPerc]), -- Using JR for consistency
+        --[ProvisionalLossRatio] = COALESCE(jr.[ProvisionalLossRatio], py.[ProvLossRatioPerc]), -- Using JR for consistency
         [MaximumCedingCommissionLLAERatio] = COALESCE(jr.[MaximumCedingCommissionLLAERatio], py.[MaxLossRatio]), -- Using JR for consistency
-        [MaximumLossRatio] = COALESCE(jr.[MaximumLossRatio], py.[MaxLossRatio]), -- Using JR for consistency
+        --[MaximumLossRatio] = COALESCE(jr.[MaximumLossRatio], py.[MaxLossRatio]), -- Using JR for consistency
         [LossRatioCap] = jr.[LossRatioCap], -- Can we get this added? Is it already available?
         [OccurenceCap] = jr.[OccurenceCap], -- Can we get this added? Is it already available?
         -- Why do we have duplicate fields?
-        [CorridorStart] = jr.[CorridorStart], -- Can we get this added? Is it already available?
+        --[CorridorStart] = jr.[CorridorStart], -- Can we get this added? Is it already available?
         [LLAECorridorAttachmentLR] = jr.[LLAECorridorAttachmentLR], -- Can we get this added? Is it already available?
-        [CorridorEnd] = jr.[CorridorEnd], -- Can we get this added? Is it already available?
+        --[CorridorEnd] = jr.[CorridorEnd], -- Can we get this added? Is it already available?
         [LLAECorridorEndLR] = jr.[LLAECorridorEndLR], -- Can we get this added? Is it already available?
         [LLAECorridorRetained] = jr.[LLAECorridorRetained], -- Can we get this added? Is it already available?
         [Contact] = jr.[Contact] -- This should be in CRM DB
@@ -191,24 +190,24 @@ SELECT
     [CollateralTerms_1] = [CollateralTerms_1],
     [PostingFrequency] = [PostingFrequency],
     [CommissionNotes] = [CommissionNotes],
-    [FlatCommission] = [FlatCommission],
+    [FlatCommission] = IIF(COALESCE([MinimumCedingCommission],0) = COALESCE([ProvisionalCedingCommission],0) AND COALESCE([MinimumCedingCommission],0) = COALESCE([MaximumCedingCommission],0), [MinimumCedingCommission], NULL),
     [MinimumCedingCommission] = [MinimumCedingCommission],
-    [MinimumCommission] = [MinimumCommission],
+    --[MinimumCommission] = [MinimumCommission],
     [ProvisionalCedingCommission] = [ProvisionalCedingCommission],
-    [ProvisionalCommission] = [ProvisionalCommission],
+    --[ProvisionalCommission] = [ProvisionalCommission],
     [MaximumCedingCommission] = [MaximumCedingCommission],
-    [MaximumCommission] = [MaximumCommission],
+    --[MaximumCommission] = [MaximumCommission],
     [MinimumCedingCommissionLLAERatio] = [MinimumCedingCommissionLLAERatio],
-    [MinimumLossRatio] = [MinimumLossRatio],
+    --[MinimumLossRatio] = [MinimumLossRatio],
     [ProvisionalCedingCommissionLLAERatio] = [ProvisionalCedingCommissionLLAERatio],
-    [ProvisionalLossRatio] = [ProvisionalLossRatio],
+    --[ProvisionalLossRatio] = [ProvisionalLossRatio],
     [MaximumCedingCommissionLLAERatio] = [MaximumCedingCommissionLLAERatio],
-    [MaximumLossRatio] = [MaximumLossRatio],
+    --[MaximumLossRatio] = [MaximumLossRatio],
     [LossRatioCap] = [LossRatioCap],
     [OccurenceCap] = [OccurenceCap],
-    [CorridorStart] = [CorridorStart],
+    --[CorridorStart] = [CorridorStart],
     [LLAECorridorAttachmentLR] = [LLAECorridorAttachmentLR],
-    [CorridorEnd] = [CorridorEnd],
+    --[CorridorEnd] = [CorridorEnd],
     [LLAECorridorEndLR] = [LLAECorridorEndLR],
     [LLAECorridorRetained] = [LLAECorridorRetained],
     [Contact] = [Contact]
@@ -273,24 +272,23 @@ GROUP BY
     [CollateralTerms_1],
     [PostingFrequency],
     [CommissionNotes],
-    [FlatCommission],
     [MinimumCedingCommission],
-    [MinimumCommission],
+    --[MinimumCommission],
     [ProvisionalCedingCommission],
-    [ProvisionalCommission],
+    --[ProvisionalCommission],
     [MaximumCedingCommission],
-    [MaximumCommission],
+    --[MaximumCommission],
     [MinimumCedingCommissionLLAERatio],
-    [MinimumLossRatio],
+    --[MinimumLossRatio],
     [ProvisionalCedingCommissionLLAERatio],
-    [ProvisionalLossRatio],
+    --[ProvisionalLossRatio],
     [MaximumCedingCommissionLLAERatio],
-    [MaximumLossRatio],
+    --[MaximumLossRatio],
     [LossRatioCap],
     [OccurenceCap],
-    [CorridorStart],
+    --[CorridorStart],
     [LLAECorridorAttachmentLR],
-    [CorridorEnd],
+    --[CorridorEnd],
     [LLAECorridorEndLR],
     [LLAECorridorRetained],
     [Contact]
