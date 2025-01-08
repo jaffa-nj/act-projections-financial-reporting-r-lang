@@ -25,9 +25,37 @@ params:
     input: text
     label: Database file containing monthly data
     value: ""
+  treaty_csv:
+    input: checkbox
+    label: Read Treaty Positions from CSV instead of Provider DB
+    value: false
   treaty_positions:
     input: text
     label: "Treaty Positions CSV file"
+    value: ""
+  provider_server_name:
+    input: text
+    label: "Provider Server Name"
+    value: ""
+  provider_port:
+    input: numeric
+    label: "Provider Port"
+    value: 1433
+  provider_database_name:
+    input: text
+    label: "Provider Database Name"
+    value: ""
+  provider_username:
+    input: text
+    label: "Provider Username"
+    value: ""
+  provider_password:
+    input: text
+    label: "Provider Password"
+    value: ""
+  underwriting_lalaes:
+    input: text
+    label: "Underwriting LALAE CSV file"
     value: ""
   development_factors:
     input: text
@@ -68,9 +96,8 @@ print(params$debug)
 ```{r, Initialize Environment}
 # Check if libraries are installed and load them
 pacman::p_load(
-  tidyverse,
-  lubridate,
-  RSQLite
+  dplyr,
+  lubridate
 )
 
 proj.env <- new.env()
@@ -108,46 +135,64 @@ datareplace <- function(fallback, new_data) {
 }
 
 # Return the number of months between two dates
-months_between <- function(EFF, CAL) {
-  num_months <- months(as.integer((year(CAL) - year(EFF)) * 12 + (month(CAL) - month(EFF)) + ifelse(day(CAL + 1) == 1, 1, 0)))
+months_between <- function(startDate, endDate) {
+  if (length(startDate) == 1) startDate <- rep(startDate, length(endDate))
+  if (length(endDate) == 1) endDate <- rep(endDate, length(startDate))
+  if (length(startDate) != length(endDate)) stop("Length of startDate and endDate must be the same.")
+
+  num_months <- mapply(function(s, e) {
+    if (lubridate::day(s) == 1 && lubridate::day(e) == lubridate::day(lubridate::ceiling_date(e, "month") - 1)) {
+      e <- e + lubridate::days(1)
+    }
+    lubridate::interval(s, e) %/% months(1)
+  }, startDate, endDate)
+
   return(num_months)
 }
 
+# This function is slow if applied to a large vector
+# Should only be used on the Treaty Terms table
 convert_numeric_to_period <- function(x, p) {
-  i <- as.integer(x)
-  y <- period(0)
-  switch(p,
-    "years" = {
-      y <- y + years(i)
-      y <- y + convert_numeric_to_period((x - i) * 12, "months")
-    },
-    "months" = {
-      y <- y + months(i)
-      y <- y + convert_numeric_to_period((x - i) * 30.44, "days")
-    },
-    "days" = {
-      y <- y + days(i)
-      y <- y + convert_numeric_to_period((x - i) * 24, "hours")
-    },
-    "hours" = {
-      y <- y + hours(i)
-      y <- y + convert_numeric_to_period((x - i) * 60, "minutes")
-    },
-    "minutes" = {
-      y <- y + minutes(i)
-      y <- y + convert_numeric_to_period((x - i) * 60, "seconds")
-    },
-    "seconds" = {
-      y <- y + seconds(i)
-      # no need to go further, we don't care about milliseconds
-    }
-  )
+  if (length(x) > 1) {
+    y <- lapply(x, convert_numeric_to_period, p = p)
+    y <- do.call("c", y)
+  } else {
+    i <- floor(x)
+    remainder <- x - i
+    y <- lubridate::period(0)
+    switch(p,
+      "years" = {
+        y <- y + lubridate::years(i)
+        if (remainder > 0) y <- y + convert_numeric_to_period(remainder * 12, "months")
+      },
+      "months" = {
+        y <- y + months(i)
+        if (remainder > 0) y <- y + convert_numeric_to_period(remainder * 30.44, "days")
+      },
+      "days" = {
+        y <- y + lubridate::days(i)
+        if (remainder > 0) y <- y + convert_numeric_to_period(remainder * 24, "hours")
+      },
+      "hours" = {
+        y <- y + lubridate::hours(i)
+        if (remainder > 0) y <- y + convert_numeric_to_period(remainder * 60, "minutes")
+      },
+      "minutes" = {
+        y <- y + lubridate::minutes(i)
+        if (remainder > 0) y <- y + convert_numeric_to_period(remainder * 60, "seconds")
+      },
+      "seconds" = {
+        y <- y + lubridate::seconds(i)
+        # no need to go further, we don't care about milliseconds
+      }
+    )
+  }
   return(y)
 }
 
 # Convert Excel serial date to date format
 convert_excel_date <- function(excel_date) {
-  as_date(excel_date, origin = "1899-12-30")
+  as.Date(excel_date, origin = "1899-12-30")
 }
 
 # Function to preserve NAs while summing
@@ -157,6 +202,60 @@ sum_with_na <- function(x) {
   } else {
     return(sum(x, na.rm = TRUE))
   }
+}
+
+# Define a function used for projecting Inherited UEPR
+# NL: For LOD policies only
+#     LOD policies are comprised of two components,
+#         1) New Risks, and
+#         2) Inherited LOD from prior UW period
+# Assumptions:
+#     1) all inherited UEPR is on policies paid at policy inception
+#     2) The average underlying policy is written mid month
+# EFF: the effective date of the treaty (assumed to be the first of the month)
+# PLEN: Policy Length in Months -- the assumed length of the underlying exposure
+# K: the difference between the month in question and the effective date of the treaty
+# When this function is used below, it uses column "Policy_Length" for that treaty's assumed policy length
+Inherited_UEPR_Pattern <- function(EFF, CAL, PLEN) {
+  # this should be a simple reimann sum of (n-k) policy issue cohorts for each k such that sum is 1
+  k <- as.numeric(months_between(EFF, CAL), "months")
+  # need to convert period back to integer form
+  PLEN <- as.numeric(PLEN, "months")
+  dplyr::if_else(k >= 0 & k < PLEN, (2 / PLEN) * (1 - (k + 0.5) / PLEN), 0)
+  # {(12-(k+0.5)*(12/PLEN))/(6*PLEN)}
+  # k+0.5 adjusts for the mid-month bind
+  # (k+0.5)/PLEN yields the proportion of the overall length that has already passed (Parallelogram horizontal distance)
+  # 1-(k+0.5)/PLEN yields the portion of the overall length yet to pass (Parallelogram horizontal distance)
+}
+
+# Define a function used for projecting monthly written premium
+# Calculates the expected fraction of written premium in a given month by checking if that month
+# is between the effective date and the expiration date
+# EFF = The effective date of the policy, assumed to be the first of the month
+# CAL = The calendar month for which we are calculating the expected written premium, assumed to be the first of the month
+# TLEN = The length of the treaty in months
+# Returns 1/TLEN if the month is within the treaty period, 0 otherwise
+WrittenPattern <- function(EFF, CAL, TLEN) {
+  treaty_month <- as.numeric(months_between(EFF, CAL), "months")
+  # need to convert period back to integer form
+  TLEN <- as.numeric(TLEN, "months")
+  dplyr::if_else(treaty_month >= 0 & treaty_month < TLEN, 1 / TLEN, 0)
+}
+
+# Define a function used for used for projecting monthly earned premium
+# k: month of treaty
+# PLEN: Policy Length in Months - the assumed length of the underlying exposure (passed from "Policy_Length")
+# The function generates a vector with proportions evenly distributed across the assumed months
+# of policy length. The 1st month, however, splits half of its share with the month following the policy duration.
+EarnedPattern <- function(k, PLEN) {
+  # need to convert period back to integer form
+  k <- as.numeric(k, "months")
+  PLEN <- as.numeric(PLEN, "months")
+  case_when(
+    (k >= 1 & k <= PLEN - 1) ~ 1 / PLEN,
+    (k == 0 | k == PLEN) ~ 1 / (2 * PLEN),
+    TRUE ~ 0
+  )
 }
 ```
 
@@ -170,14 +269,91 @@ overrides_table contains confirmed revisions to the monthly submission data reco
 
 ```{r, Load Data}
 # Import data and ensure strings aren't recognized as factors
-proj.env$treaty_positions <- read.csv(
-  paste(params$reporting_path, params$treaty_positions, sep = ""),
-  stringsAsFactors = FALSE
-) %>%
-  mutate(
-    Effective.Date. = convert_excel_date(Effective.Date.),
-    Expiration.Date. = convert_excel_date(Expiration.Date.)
+if (params$treaty_csv) {
+  # Import data and ensure strings aren't recognized as factors
+  proj.env$treaty_positions <- read.csv(
+    paste(params$reporting_path, params$treaty_positions, sep = ""),
+    stringsAsFactors = FALSE
+  ) %>%
+    rename(
+      KEY = ConcatenatedKey,
+    ) %>%
+    mutate(
+      EffectiveDate = convert_excel_date(EffectiveDate),
+      ExpirationDate = convert_excel_date(ExpirationDate),
+      TreatyLength = months_between(EffectiveDate, ExpirationDate),
+      AssumedPolicyLengthMonths = convert_numeric_to_period(AssumedPolicyLengthMonths, "months"),
+    )
+} else {
+  # Establish a connection to the Microsoft SQL Database
+  proj.env$sqlconn <- DBI::dbConnect(odbc::odbc(),
+    Driver = "ODBC Driver 17 for SQL Server",
+    Server = paste0(params$provider_server_name, ",", params$provider_port),
+    Database = params$provider_database_name,
+    UID = params$provider_username,
+    PWD = params$provider_password
   )
+
+  # Query the data from the TreatyTable
+  proj.env$treaty_positions <- DBI::dbGetQuery(proj.env$sqlconn, paste(readLines("TreatyTable.sql"), collapse = "\n")) %>%
+    filter(EffectiveDate <= params$date_of_valuation) %>%
+    rename(
+      KEY = ConcatenatedKey,
+    ) %>%
+    mutate(
+      TreatyLength = months_between(EffectiveDate, ExpirationDate),
+      AssumedPolicyLengthMonths = convert_numeric_to_period(AssumedPolicyLengthMonths, "months"),
+    )
+
+  # Close the database connection
+  DBI::dbDisconnect(proj.env$sqlconn)
+
+  proj.env$underwriting_lalaes <- read.csv(
+    paste(params$reporting_path, params$underwriting_lalaes, sep = ""),
+    stringsAsFactors = FALSE
+  ) %>%
+    select(
+      KEY,
+      Duration.Estimated,
+      LALAE.NoImprovement.Gross,
+      LALAE.HalfImprovement.Gross,
+      LALAE.Market.Gross,
+      LALAE.Industry.Gross,
+      LALAE.NoImprovement.NetCorridorsAndCaps,
+      LALAE.HalfImprovement.NetCorridorsAndCaps,
+      LALAE.Market.NetCorridorsAndCaps,
+      LALAE.Industry.NetCorridorsAndCaps,
+      CR.NoImprovement,
+      CR.HalfImprovement,
+      CR.Market,
+      CR.Industry,
+    )
+
+  # Verify that all keys in the underwriting_lalaes table are present in the treaty_positions table
+  if (any(!proj.env$underwriting_lalaes$KEY %in% proj.env$treaty_positions$KEY)) {
+    proj.env$missing_keys <- unique(proj.env$underwriting_lalaes$KEY[!proj.env$underwriting_lalaes$KEY %in% proj.env$treaty_positions$KEY])
+    warning(paste(
+      "The following keys in the underwriting_lalaes table are not present in the treaty_positions table:\n",
+      paste(proj.env$missing_keys, collapse = "\n")
+    ))
+  }
+
+  if (any(!proj.env$treaty_positions$KEY %in% proj.env$underwriting_lalaes$KEY)) {
+    proj.env$missing_keys <- unique(proj.env$treaty_positions$KEY[!proj.env$treaty_positions$KEY %in% proj.env$underwriting_lalaes$KEY])
+    stop(paste(
+      "The following keys in the treaty_positions table are not present in the underwriting_lalaes table:\n",
+      paste(proj.env$missing_keys, collapse = "\n")
+    ))
+  }
+
+  # Join the underwriting_lalaes table to the treaty_positions table
+  # These are values that our underwriting team is responsible for, and may not be maintained or updated in vendor table in a timely fashion
+  proj.env$treaty_positions <- proj.env$treaty_positions %>%
+    inner_join(
+      proj.env$underwriting_lalaes,
+      by = c("KEY")
+    )
+}
 
 proj.env$development_factors <- read.csv(
   paste(params$reporting_path, params$development_factors, sep = ""),
@@ -190,7 +366,8 @@ proj.env$extract_dates <- read.csv(
 ) %>%
   select(-key) %>%
   mutate(
-    extract_to_use = convert_excel_date(extract_to_use)
+    extract_to_use = convert_excel_date(extract_to_use),
+    nre_feed = as.character(nre_feed)
   ) %>%
   rename(extract_to_use_reason = Reason)
 
@@ -200,7 +377,8 @@ proj.env$experience_to_omit <- read.csv(
 ) %>%
   select(-key) %>%
   mutate(
-    month_to_exclude = convert_excel_date(month_to_exclude)
+    month_to_exclude = convert_excel_date(month_to_exclude),
+    nre_feed = as.character(nre_feed)
   ) %>%
   rename(reason_to_drop = Reason)
 
@@ -209,7 +387,8 @@ proj.env$overrides_table <- read.csv(
   stringsAsFactors = FALSE
 ) %>%
   mutate(
-    bordereaux_month = convert_excel_date(bordereaux_month)
+    bordereaux_month = convert_excel_date(bordereaux_month),
+    nre_feed = as.character(nre_feed)
   ) %>%
   select(-key) %>%
   rename(reason_to_override = Reason)
@@ -218,21 +397,41 @@ proj.env$overrides_table <- read.csv(
 ### Load latest query of data and merge with the Exception Table
 
 ```{r, Query Most Recent Experience Data}
-proj.env$con <- dbConnect(
-  SQLite(),
+proj.env$con <- DBI::dbConnect(
+  RSQLite::SQLite(),
   dbname = paste(params$reporting_path, params$database_name, sep = "")
 )
-proj.env$our_db <- dbReadTable(
+
+proj.env$our_db <- DBI::dbReadTable(
   proj.env$con,
   params$source_data_table_name
 ) %>%
   mutate(
+    nre_feed = tolower(nre_feed),
     bordereaux_month = as.Date(bordereaux_month),
     v_created = as.Date(v_created),
     query_date = as.Date(query_date)
   )
-dbDisconnect(proj.env$con)
 
+DBI::dbDisconnect(proj.env$con)
+```
+
+Validate the data by checking for missing values in the key columns.
+
+```{r, Check Overrides have matching keys}
+# Check that all keys in the overrides table are present in the data
+if (any(!proj.env$extract_dates$nre_feed %in% proj.env$our_db$nre_feed & !proj.env$extract_dates$treaty_year %in% proj.env$our_db$treaty_year)) {
+  stop("Keys in the extract_dates table are not present in the data.")
+}
+
+if (any(!proj.env$experience_to_omit$nre_feed %in% proj.env$our_db$nre_feed & !proj.env$experience_to_omit$treaty_year %in% proj.env$our_db$treaty_year)) {
+  stop("Keys in the experience_to_omit table are not present in the data.")
+}
+```
+
+Apply Overrides to address data issues and filter data by Valuation Date
+
+```{r, Apply Overrides and Filter Data by Valuation Date}
 # Find the latest query_date.
 # Store it as a string and filter to only retain matching rows
 proj.env$latest_refresh_date <- as.Date(max(proj.env$our_db$v_created))
@@ -242,7 +441,7 @@ proj.env$our_db_filtered <- proj.env$our_db %>%
   dplyr::left_join(proj.env$experience_to_omit, by = c("nre_feed", "treaty_year")) %>%
   dplyr::filter(
     v_created == coalesce(extract_to_use, proj.env$latest_refresh_date),
-    bordereaux_month != coalesce(month_to_exclude, as.Date(format(Sys.Date() + months(1), "%Y-%m-01")))
+    bordereaux_month != coalesce(month_to_exclude, as.Date(format(Sys.Date() + lubridate::period(1, units = "months"), "%Y-%m-01")))
   )
 ```
 
@@ -287,6 +486,15 @@ if (
 }
 ```
 
+Validate that any exceptions in the data have a matching key.
+
+```{r, Validate Exceptions}
+# Check that all keys in the exceptions table are present in the data
+if (any(!proj.env$overrides_table$nre_feed %in% proj.env$our_db$nre_feed & !proj.env$overrides_table$treaty_year %in% proj.env$our_db$treaty_year & !proj.env$overrides_table$bordereaux_month %in% proj.env$our_db$bordereaux_month)) {
+  stop("Keys in the exceptions table are not present in the data.")
+}
+```
+
 Now that we have the latest data validated, we can correct any known exceptions in the data.
 
 ```{r, Correct Exceptions}
@@ -310,7 +518,27 @@ Load the keys we use for projections
 proj.env$key_translations <- read.csv(
   paste(params$reporting_path, params$key_map, sep = ""),
   stringsAsFactors = FALSE
-)
+) %>%
+  dplyr::mutate(
+    nre_feed = tolower(nre_feed)
+  )
+```
+
+Validate the key mappings by checking the source table.
+
+```{r, Check Mappings have matching keys}
+# Check if there are any rows in our_db_filtered that do not have matching keys in key_translations
+proj.env$missing_keys <- proj.env$our_db_filtered %>%
+  anti_join(proj.env$key_translations, by = c("nre_feed", "treaty_year")) %>%
+  select(nre_feed, treaty_year) %>%
+  distinct()
+
+if (nrow(proj.env$missing_keys) > 0) {
+  stop(paste(
+    "The following keys in the experience table are not present in the key_translations table:\n",
+    paste(proj.env$missing_keys$nre_feed, proj.env$missing_keys$treaty_year, collapse = "\n")
+  ))
+}
 ```
 
 Consolidate (Aggregate) source data according to our keys
@@ -371,6 +599,19 @@ proj.env$vel_df3 <- proj.env$vel_df2 %>%
   )
 ```
 
+Validate the keys in the experience table exist in the treaty position table.
+
+```{r, Check experience keys match treaty position keys}
+# Check that all keys to map exist in the treaty table
+if (any(!proj.env$vel_df3$KEY %in% proj.env$treaty_positions$KEY)) {
+  proj.env$missing_keys <- unique(proj.env$vel_df3$KEY[!proj.env$vel_df3$KEY %in% proj.env$treaty_positions$KEY])
+  stop(paste(
+    "The following keys in the experience table are not present in the treaty_positions table:\n",
+    paste(proj.env$missing_keys, collapse = "\n")
+  ))
+}
+```
+
 ### Join and Prepare Data
 
 This step creates a dataframe with every treaty having monthly rows from 2020 - 2070.
@@ -383,34 +624,28 @@ proj.env$date_vector <- seq.Date(as.Date("2020-01-01"), as.Date("2070-12-01"), b
 
 # expand.grid works like a cross_join, but doesn't require the vectors to be dataframes
 proj.env$MonthlyProjections <- expand.grid(
-  Treaty = proj.env$treaty_positions$KEY.,
-  Month = proj.env$date_vector
+  KEY = proj.env$treaty_positions$KEY,
+  MONTH = proj.env$date_vector
 ) %>%
-  left_join(proj.env$treaty_positions, by = c("Treaty" = "KEY.")) %>%
-  left_join((proj.env$vel_df3 %>% mutate(MONTH = ym(MONTH))), by = c("Treaty" = "KEY", "Month" = "MONTH")) %>%
+  inner_join(proj.env$treaty_positions, by = c("KEY")) %>%
+  filter(MONTH >= EffectiveDate %m-% months(1)) %>%
+  left_join(
+    (
+      proj.env$vel_df3 %>%
+        mutate(MONTH = lubridate::ym(MONTH))
+    ),
+    by = c("KEY", "MONTH")
+  ) %>%
   rename(
-    Program_Name = MGA...Program.Name.,
-    Carrier = Carrier.,
-    Primary_LOB = Primary.Line.s..of.Business.,
-    Secondary_LOB = Secondary.Line.s..of.Business.,
-    Effective_Date = Effective.Date.,
-    Expiration_Date = Expiration.Date.,
-    Suffix = Suffix.,
-    RA_or_LOD = RA.or.LOD.,
-    Total_Subject_Premium = Total.Subject.Premium.,
-    Target_Participation = Target.Participation...,
-    Inherited_UEPR = Inherited.UEPR...outside.of.participation..,
-    ALAE_ULAE_In_Ceded_LR = ALAE..ULAE.or.both.included.in.ceded.loss.ratio.,
-    Est_Payout_Duration_Yrs = Estimated.Payout.Duration..years.from.point.exposure..,
-    Prior_No_Impr_Gross_LALAE_Ratio_Excl_Corr = Prior.No.Improvement.Gross.LALAE.Ratio..excluding.corridor..LR.cap..etc...,
-    Prior_Half_Impr_Gross_LALAE_Ratio_Excl_Corr = Prior.Half.Improvement.Gross.LALAE.Ratio..excluding.corridor..LR.cap..etc...,
-    ULAE_Perc = ULAE.Outside.Ceding.Commission...,
-    Reins_Broker_Perc = Reinsurance.Broker.Commission...,
-    Expenses_Perc = Other.Separately.Charged..Expenses...,
-    LALAE_Ratio_No_Improv = Prior.No.Improvment.Net.LALAE.Ratio..including.corridor..LR.cap..etc...,
-    LALAE_Ratio_Half_Improv = Prior.Half.Improvment.Net.LALAE.Ratio..including.corridor..LR.cap..etc...,
-    LALAE_Ratio_Break_Even = Prior.Breakeven.LALAE.Ratio.,
-    Policy_Length = Assumed.Policy.Length.Months.,
+    Effective_Date = EffectiveDate,
+    Expiration_Date = ExpirationDate,
+    RA_or_LOD = RAvLOD,
+    Total_Subject_Premium = TotalSubjectPremium,
+    Inherited_UEPR = InheritedUEPROutsideParticipation,
+    ULAE_Perc = ULAEOutsideCedingCommission,
+    Reins_Broker_Perc = ReinsuranceBrokerCommission,
+    Expenses_Perc = SeparateExpenses,
+    Policy_Length = AssumedPolicyLengthMonths,
     WP_Monthly_Data = DATAWPARTMONTH,
     EP_Monthly_Data = DATAEPARTMONTH,
     Loss_Paid_Monthly_Data = DATAPARTPAIDLOSSMONTH,
@@ -418,19 +653,12 @@ proj.env$MonthlyProjections <- expand.grid(
     ULAE_Paid_Monthly_Data = DATAPARTPAIDULAEMONTH,
     Loss_Case_Reserve_Data = DATAPARTCASEOSLOSS,
     ALAE_Case_Reserve_Data = DATAPARTCASEOSALAE,
-    ULAE_Case_Reserve_Data = DATAPARTCASEOSULAE
+    ULAE_Case_Reserve_Data = DATAPARTCASEOSULAE,
   ) %>%
   mutate(
-    Treaty_Length = months_between(Effective_Date, Expiration_Date),
-    Policy_Length = convert_numeric_to_period(Policy_Length, "months"),
-    MaturityDateOfNewPolicies = as.Date(Month %m+% Policy_Length) - 1,
-    MonthsNewPolicyInforceAfterTreatyEnds = months(ifelse(
-      Month >= Effective_Date & Month <= Expiration_Date,
-      pmax(as.numeric(months_between(Expiration_Date, MaturityDateOfNewPolicies), "months"), 0),
-      0
-    )),
+    MaturityDateOfNewPolicies = as.Date(MONTH %m+% Policy_Length) - 1,
   ) %>%
-  arrange(Treaty, Month)
+  arrange(KEY, MONTH)
 ```
 
 ### Project Monthly Earned Pattern against Inherited UEPR
@@ -440,36 +668,11 @@ This step projects a monthly earned pattern to the Inherited UEPR, resulting in 
 This only applies to LOD treaties.
 
 ```{r, Project Monthly Earned Pattern against Inherited UEPR}
-# Define a function used for projecting Inherited UEPR
-# NL: For LOD policies only
-#     LOD policies are comprised of two components,
-#         1) New Risks, and
-#         2) Inherited LOD from prior UW period
-# Assumptions:
-#     1) all inherited UEPR is on policies paid at policy inception
-#     2) The average underlying policy is written mid month
-# EFF: the effective date of the treaty (assumed to be the first of the month)
-# PLEN: Policy Length in Months -- the assumed length of the underlying exposure
-# K: the difference between the month in question and the effective date of the treaty
-# When this function is used below, it uses column "Policy_Length" for that treaty's assumed policy length
-Inherited_UEPR_Pattern <- function(EFF, CAL, PLEN) {
-  k <- as.numeric(months_between(EFF, CAL), "months")
-  # need to convert period back to integer form
-  PLEN <- as.numeric(PLEN, "months")
-  dplyr::if_else(k >= 0 & k <= (PLEN - 1), (2 / PLEN) * (1 - (k + 0.5) / PLEN), 0)
-  # {(12-(k+0.5)*(12/PLEN))/(6*PLEN)}
-  # k+0.5 adjusts for the mid-month bind
-  # (k+0.5)/PLEN yields the proportion of the overall length that has already passed (Parallelogram horizontal distance)
-  # 1-(k+0.5)/PLEN yields the portion of the overall length yet to pass (Parallelogram horizontal distance)
-}
-
-
-
 # Project IUEPR by month using Inherited_UEPR_Pattern function
 proj.env$MonthlyProjections <- proj.env$MonthlyProjections %>%
   mutate(
-    IUEPR_Total = replace_na(Inherited_UEPR, 0),
-    IUEPR_Perc = Inherited_UEPR_Pattern(Effective_Date, Month, Policy_Length),
+    IUEPR_Total = tidyr::replace_na(Inherited_UEPR, 0),
+    IUEPR_Perc = Inherited_UEPR_Pattern(Effective_Date, MONTH, Policy_Length),
     IUEPR_Monthly = IUEPR_Total * IUEPR_Perc
   )
 ```
@@ -477,12 +680,16 @@ proj.env$MonthlyProjections <- proj.env$MonthlyProjections %>%
 The following is a check to ensure that LOD Treaties have their sum of IUEPR_Monthly equal to IUEPR_Total.
 
 ```{r, Validate UEPR calc gets back to total}
-proj.env$MonthlyProjections %>%
-  distinct(Treaty, .keep_all = TRUE) %>%
+proj.env$Total_IUEPR <- proj.env$MonthlyProjections %>%
+  distinct(KEY, .keep_all = TRUE) %>%
   summarize(Total_IUEPR = sum(IUEPR_Total)) %>%
   pull(Total_IUEPR)
 
-sum(proj.env$MonthlyProjections$IUEPR_Monthly)
+proj.env$Total_IUEPR_Monthly <- sum(proj.env$MonthlyProjections$IUEPR_Monthly)
+
+if (proj.env$Total_IUEPR != proj.env$Total_IUEPR_Monthly) {
+  stop("Total IUEPR and Total IUEPR Monthly are not equal.")
+}
 ```
 
 ### Project Company's Share of Monthly Written Premium
@@ -492,27 +699,13 @@ This step projects share of monthly written premium and revises projections with
 The projection evenly distributes the estimated total written premium across the n month treaty period.
 
 ```{r, Project Business Proportion of Written Premium}
-# Define a function used for projecting monthly written premium
-# Calculates the expected fraction of written premium in a given month by checking if that month
-# is between the effective date and the expiration date
-# EFF = The effective date of the policy, assumed to be the first of the month
-# CAL = The calendar month for which we are calculating the expected written premium, assumed to be the first of the month
-# TLEN = The length of the treaty in months
-# Returns 1/TLEN if the month is within the treaty period, 0 otherwise
-WrittenPattern <- function(EFF, CAL, TLEN) {
-  treaty_month <- as.numeric(months_between(EFF, CAL), "months")
-  # need to convert period back to integer form
-  TLEN <- as.numeric(TLEN, "months")
-  dplyr::if_else(treaty_month >= 0 & treaty_month < TLEN, 1 / TLEN, 0)
-}
-
 # Project Written Participation by Month
 proj.env$MonthlyProjections <- proj.env$MonthlyProjections %>%
   dplyr::mutate(
     # Our QS (quota share) of the Estimated Total Written Premium
-    WP_Total = Total_Subject_Premium * Target_Participation,
+    WP_Total = Total_Subject_Premium * TargetParticipationPercentage,
     # Allocate 1/n for all months during the treaty period (where n is the number of months the treaty is effective for), 0 otherwise
-    WP_Perc = WrittenPattern(Effective_Date, Month, Treaty_Length),
+    WP_Perc = WrittenPattern(Effective_Date, MONTH, TreatyLength),
     # Project monthly written participation
     WP_Monthly = WP_Total * WP_Perc,
   )
@@ -543,15 +736,20 @@ The following is a check to ensure the originally anticipated WP participation (
 
 ```{r, Validate Written Premium Participation}
 # Sum of anticipated treaty WP participations
-proj.env$MonthlyProjections %>%
-  distinct(Treaty, .keep_all = TRUE) %>%
+proj.env$Total_WP_Participation <- proj.env$MonthlyProjections %>%
+  distinct(KEY, .keep_all = TRUE) %>%
   summarize(Total_WP_Participation = sum(WP_Total)) %>%
   pull(Total_WP_Participation)
 
 # WP_Monthly contains projected monthly WP and, where available, reported WP
 # Therefore, we sum the revised WP_Monthly column and add the monthly discrepancies between
 # projected and actual reported values.
-sum(proj.env$MonthlyProjections$WP_Monthly) + proj.env$WP_Proj_vs_Rept
+proj.env$Total_WP_Monthly <- sum(proj.env$MonthlyProjections$WP_Monthly) + proj.env$WP_Proj_vs_Rept
+
+# Throw an error if the two amounts are not equal
+if (abs(proj.env$Total_WP_Participation - proj.env$Total_WP_Monthly) > 0.01) {
+  stop("Total WP Participation and Total WP Monthly are not equal.")
+}
 ```
 
 ### Project Company's Share of Monthly Earned Premium
@@ -561,82 +759,91 @@ This step projects share of monthly earned premium and revises projections with 
 Two temporary tables are created to form and calculate the sumproduct of earned premium for each month, which are then joined back to MonthlyProjections.
 
 ```{r, Project Business Proportion of Earned Premium}
-# Define a function used for used for projecting monthly earned premium
-# k: month of treaty
-# PLEN: Policy Length in Months - the assumed length of the underlying exposure (passed from "Policy_Length")
-# The function generates a vector with proportions evenly distributed across the assumed months
-# of policy length. The 1st month, however, splits half of its share with the month following the policy duration.
-EarnedPattern <- function(k, PLEN) {
-  # need to convert period back to integer form
-  k <- as.numeric(k, "months")
-  PLEN <- as.numeric(PLEN, "months")
-  case_when(
-    (k >= 1 & k <= (PLEN - 1)) ~ 1 / PLEN,
-    (k == 0 | k == PLEN) ~ 1 / (2 * PLEN),
-    TRUE ~ 0
-  )
-}
-
 # Create first table containing all rows in MonthlyProjections dataframe
 proj.env$table1_Earning_Pattern <- proj.env$MonthlyProjections %>%
   select(
     # Keys
-    Program_Name,
-    Primary_LOB,
-    Effective_Date,
-    Suffix,
-    WP_Month = Month,
+    KEY,
+    WP_Month = MONTH,
     # Attribute
     RA_or_LOD,
     Policy_Length,
     WP_Monthly,
     Expiration_Date,
-  )
+  ) %>%
+  rowwise() %>%
+  mutate(
+    EP_Months = list(seq.Date(WP_Month, as.Date(lubridate::ceiling_date(WP_Month %m+% Policy_Length, "month") - 1), by = "month")),
+    EP_Month_Index = list(seq_along(EP_Months) - 1)
+  ) %>%
+  tidyr::unnest(cols = c(EP_Months, EP_Month_Index)) %>%
+  rename(
+    EP_Month = EP_Months,
+    Earned_Lag = EP_Month_Index
+  ) %>%
+  ungroup()
 
-# Create a second table by joining on the newly created EP_Month, resulting in multiple earning months for each WP month
-proj.env$table2_Earning_Pattern <- left_join(
-  proj.env$table1_Earning_Pattern,
-  select(proj.env$table1_Earning_Pattern, EP_Month = WP_Month) %>% distinct(),
-  join_by(WP_Month <= EP_Month)
-) %>%
+# Create a additional rows for every month the WP is earned in ( WP_Month through WP_Month + Policy_Length)
+proj.env$table2_Earning_Pattern <- proj.env$table1_Earning_Pattern %>%
+  group_by(
+    KEY,
+    WP_Month
+  ) %>%
   dplyr::mutate(
-    # Calculate the lag between writing and earning
-    Earned_Lag = months_between(WP_Month, EP_Month),
     # Calculate the percent of premium earned in each month from each WP month
-    Earned_Pct = ifelse(
+    Earned_Pct = EarnedPattern(Earned_Lag, Policy_Length),
+    # Earned Premium from each WP month is the product of that month's WP
+    EP_Monthly = dplyr::if_else(
       RA_or_LOD == "LOD" & EP_Month > Expiration_Date,
       0,
-      EarnedPattern(Earned_Lag, Policy_Length)
+      Earned_Pct * WP_Monthly
     ),
-    # Earned Premium from each WP month is the product of that month's WP
-    EP_Monthly = Earned_Pct * WP_Monthly,
+    EP_TransferredToNextTreaty = dplyr::if_else(
+      RA_or_LOD == "LOD" & EP_Month > Expiration_Date,
+      Earned_Pct * WP_Monthly,
+      0
+    ),
+    DUEPR_Balance = rev(cumsum(rev(EP_TransferredToNextTreaty))),
   ) %>%
   # Remove all rows that don't have an Earned Premium. (And retain negative earned premiums.)
-  dplyr::filter(EP_Monthly != 0) %>%
+  dplyr::filter(WP_Monthly != 0) %>%
   # Sum across WP months because it's irrelevant which WP month it was sourced from, rather only when it was earned
   group_by(
-    Program_Name,
-    Primary_LOB,
-    Effective_Date,
-    Suffix,
+    KEY,
     EP_Month
   ) %>%
-  summarize(EP_Monthly = sum(EP_Monthly))
-# ungroup() # ungroup shouldn't be needed because summarize will have collapsed the rows by the group_by columns
+  summarize(
+    EP_Monthly = sum(EP_Monthly),
+    EP_TransferredToNextTreaty = sum(EP_TransferredToNextTreaty),
+    DUEPR_Balance = sum(DUEPR_Balance),
+  )
 
 # Join the earned premiums (EP_Monthly) to MonthlyProjections
 proj.env$MonthlyProjections <- proj.env$MonthlyProjections %>%
-  left_join(select(proj.env$table2_Earning_Pattern, c(Program_Name, Primary_LOB, Effective_Date, Suffix, EP_Month, EP_Monthly)),
+  left_join(
+    proj.env$table2_Earning_Pattern,
     by = c(
-      "Program_Name",
-      "Primary_LOB",
-      "Effective_Date",
-      "Suffix",
-      "Month" = "EP_Month"
+      "KEY",
+      "MONTH" = "EP_Month"
     )
   ) %>%
-  mutate(EP_Monthly = replace_na(EP_Monthly, 0))
+  mutate(
+    EP_Monthly = tidyr::replace_na(EP_Monthly, 0),
+    EP_TransferredToNextTreaty = tidyr::replace_na(EP_TransferredToNextTreaty, 0),
+    DUEPR_Balance = tidyr::replace_na(DUEPR_Balance, 0)
+  )
 
+# Validate that the sum of EP_Monthly equals the sum of WP_Monthly
+proj.env$total_wp_monthly <- sum(proj.env$MonthlyProjections$WP_Monthly, na.rm = TRUE)
+proj.env$total_ep_monthly <- (
+  sum(proj.env$MonthlyProjections$EP_Monthly, na.rm = TRUE)
+  + sum(proj.env$MonthlyProjections$EP_TransferredToNextTreaty, na.rm = TRUE)
+)
+
+if (abs(proj.env$total_wp_monthly - proj.env$total_ep_monthly) > 0.01) {
+  stop("Total WP_Monthly and Total EP_Monthly are not equal.")
+  # we need to account for the Written Premium that will not be earned in LOD Treaties
+}
 
 proj.env$MonthlyProjections <- proj.env$MonthlyProjections %>%
   mutate(
@@ -648,7 +855,7 @@ proj.env$MonthlyProjections <- proj.env$MonthlyProjections %>%
     # TODO: this is a known issue and we need to develop a fix for it
     EP_Monthly_Incl_IUEPR = datareplace(EP_Monthly_Incl_IUEPR, EP_Monthly_Data),
   ) %>%
-  group_by(Treaty) %>%
+  group_by(KEY) %>%
   mutate(
     # Total Earned Premium To Date (for each treaty)
     EP_To_Date = cumsum(EP_Monthly_Incl_IUEPR),
@@ -658,16 +865,8 @@ proj.env$MonthlyProjections <- proj.env$MonthlyProjections %>%
     UEPR = IUEPR_Total + WP_To_Date - EP_To_Date,
     # Actual UEPR Balance remaining on IUEPR alone
     # IUEPR_Balance = IUEPR_Total - cumsum(IUEPR_Monthly),
-    # Total Written Premium to Disinherit as it will runoff to the next treaty,
-    DUEPR_Balance = cumsum(WP_ToEarnNextTreaty)
   ) %>%
   ungroup()
-```
-
-```{r, Validate Written to Earned Premium}
-# Check that total earned premium == total written premium
-sum(proj.env$MonthlyProjections$WP_Monthly)
-sum(proj.env$MonthlyProjections$EP_Monthly)
 ```
 
 ### Undeveloping Earned Premiums for Projecting Paid and Reported Losses
@@ -676,40 +875,62 @@ This step projects paid and reported losses by undeveloping the total earned pre
 
 Two temporary tables are used to form and calculate the sumproducts of the losses that occur for each month, which are then joined back to MonthlyProjections.
 
+```{r, Validate Keys in Dev Factors}
+# Check that all keys in the development factors table are present in the data
+# This is a warning because dev factors may have treaties not yet bound or effective
+if (any(!proj.env$development_factors$KEY %in% proj.env$MonthlyProjections$KEY)) {
+  proj.env$missing_keys <- unique(proj.env$development_factors$KEY[!proj.env$development_factors$KEY %in% proj.env$MonthlyProjections$KEY])
+  warning(paste(
+    "The following keys in the development factors table are not present in the projection table:\n",
+    paste(proj.env$missing_keys, collapse = "\n")
+  ))
+}
+
+# Check that all keys in the projection table are present in the development factors
+if (any(!proj.env$MonthlyProjections$KEY %in% proj.env$development_factors$KEY)) {
+  proj.env$missing_keys <- unique(proj.env$MonthlyProjections$KEY[!proj.env$MonthlyProjections$KEY %in% proj.env$development_factors$KEY])
+  stop(paste(
+    "The following keys in the projection table are not present in the development factors table:\n",
+    paste(proj.env$missing_keys, collapse = "\n")
+  ))
+}
+```
+
 ```{r, Apply development factors}
 # Prepare the development factors dataset to have 0 months lag indicating the current month
 proj.env$DEVS_rev <- proj.env$development_factors %>%
   arrange(KEY, LAG_ACCMONTH) %>%
   dplyr::filter(LAG_ACCMONTH != 0) %>% # Remove rows where LAG_ACCMONTH is 0
-  mutate(LAG_ACCMONTH = months(LAG_ACCMONTH - 1)) # Decrement LAG_ACCMONTH by 1
+  rowwise() %>%
+  mutate(LAG_ACCMONTH = lubridate::period(LAG_ACCMONTH - 1, unit = "months")) %>% # Decrement LAG_ACCMONTH by 1
+  ungroup()
 
 # Create an initial table that will be used for calculating losses
 proj.env$t_Loss <- proj.env$MonthlyProjections %>%
   select(
     # Primary Key
-    Treaty,
-    # Unique Key
-    Program_Name,
-    Primary_LOB,
+    KEY,
     Effective_Date,
-    Suffix,
-    Effective_Date,
-    Month,
+    MONTH,
     # Attribute
     EP_Monthly_Incl_IUEPR
   ) %>%
   # This is basically the same as using window functions in SQL
   # e.g. SUM(x) OVER (PARTITION BY y) in this case
-  group_by(Treaty) %>%
+  group_by(KEY) %>%
   mutate(Total_Earned_Partic = sum(EP_Monthly_Incl_IUEPR)) %>%
   ungroup()
 
 # Join the development factors
 proj.env$t_Loss_2 <- proj.env$t_Loss %>%
-  full_join(proj.env$DEVS_rev, by = c("Treaty" = "KEY"), relationship = "many-to-many") %>%
+  full_join(
+    proj.env$DEVS_rev,
+    by = c("KEY"),
+    relationship = "many-to-many" # because need the full vector for each incurred month
+  ) %>%
   dplyr::mutate(
     # This column contains the month for the paid and reported losses
-    LAG_date = Month %m+% LAG_ACCMONTH,
+    LAG_date = MONTH %m+% LAG_ACCMONTH,
     # Paid and Reported losses using development factors on Earned Premium
     # I renamed Paid_Loss -> EP_Undev_Paid
     # I renamed Reported_Loss -> EP_Undev_Reported
@@ -721,10 +942,8 @@ proj.env$t_Loss_2 <- proj.env$t_Loss %>%
   # Sum across loss months because it's irrelevant which EP month it was sourced from,
   # rather only when the loss is paid/reported
   group_by(
-    Program_Name,
-    Primary_LOB,
+    KEY,
     Effective_Date,
-    Suffix,
     Total_Earned_Partic,
     LAG_date
   ) %>%
@@ -749,22 +968,27 @@ proj.env$t_Loss_2 <- proj.env$t_Loss %>%
   ) %>%
   ungroup() %>% # ungroup required here because it won't allow removing a column in the group_by list above
   # Remove columns that won't be imported
-  select(-Total_Earned_Partic)
+  select(
+    -Total_Earned_Partic,
+    -Effective_Date
+  )
 
-proj.env$MonthlyProjections <- proj.env$MonthlyProjections %>% left_join(proj.env$t_Loss_2, by = c(
-  "Program_Name",
-  "Primary_LOB",
-  "Effective_Date",
-  "Suffix",
-  "Month" = "LAG_date"
-))
+proj.env$MonthlyProjections <- proj.env$MonthlyProjections %>%
+  left_join(
+    proj.env$t_Loss_2,
+    by = c(
+      "KEY",
+      "MONTH" = "LAG_date"
+    )
+  )
 ```
 
 The following is a check to ensure the columns for paid and reported losses sum to the total undeveloped earned premium. There may be slight deviances due to the different calculations involved with each field.
 
 ```{r, Validate Losses}
+# TODO: Make this throw an error when fails?
 proj.env$Check_EP_Undev_Losses <- proj.env$MonthlyProjections %>%
-  group_by(Treaty) %>%
+  group_by(KEY) %>%
   summarize(
     EP_Monthly_Incl_IUEPR_Total = sum(EP_Monthly_Incl_IUEPR),
     EP_Undev_Paid_Total = max(EP_Undev_Paid),
@@ -786,18 +1010,143 @@ proj.env$MonthlyProjections <- proj.env$MonthlyProjections %>%
     ULAE_Total = EP_To_Date * ULAE_Perc,
     Reins_Broker_Comm_Total = EP_To_Date * Reins_Broker_Perc,
     Expenses_Total = EP_To_Date * Expenses_Perc,
-    LALAE_Paid_Total_No_Improv = EP_Undev_Paid * LALAE_Ratio_No_Improv,
-    LALAE_Paid_Total_Half_Improv = EP_Undev_Paid * LALAE_Ratio_Half_Improv,
-    LALAE_Paid_Total_Break_Even = EP_Undev_Paid * LALAE_Ratio_Break_Even,
-    LALAE_Reported_Total_No_Improv = EP_Undev_Reported * LALAE_Ratio_No_Improv,
-    LALAE_Reported_Total_Half_Improv = EP_Undev_Reported * LALAE_Ratio_Half_Improv,
-    LALAE_Reported_Total_Break_Even = EP_Undev_Reported * LALAE_Ratio_Break_Even,
-    LALAE_Reserve_No_Improv = LALAE_Ratio_No_Improv * (EP_To_Date - EP_Undev_Paid),
-    LALAE_Reserve_Half_Improv = LALAE_Ratio_Half_Improv * (EP_To_Date - EP_Undev_Paid),
-    LALAE_Reserve_Break_Even = LALAE_Ratio_Break_Even * (EP_To_Date - EP_Undev_Paid),
-    LALAE_IBNR_No_Improv = LALAE_Ratio_No_Improv * (EP_To_Date - EP_Undev_Reported),
-    LALAE_IBNR_Half_Improv = LALAE_Ratio_Half_Improv * (EP_To_Date - EP_Undev_Reported),
-    LALAE_IBNR_Break_Even = LALAE_Ratio_Break_Even * (EP_To_Date - EP_Undev_Reported)
+    # These should just be calculated in valuation workbook
+    LALAE_Paid_Total_No_Improv = LALAE.NoImprovement.NetCorridorsAndCaps * EP_Undev_Paid,
+    LALAE_Paid_Total_Half_Improv = LALAE.HalfImprovement.NetCorridorsAndCaps * EP_Undev_Paid,
+    LALAE_Paid_Total_Break_Even = LALAE.Market.NetCorridorsAndCaps * EP_Undev_Paid,
+    LALAE_Reported_Total_No_Improv = LALAE.NoImprovement.NetCorridorsAndCaps * EP_Undev_Reported,
+    LALAE_Reported_Total_Half_Improv = LALAE.HalfImprovement.NetCorridorsAndCaps * EP_Undev_Reported,
+    LALAE_Reported_Total_Break_Even = LALAE.Market.NetCorridorsAndCaps * EP_Undev_Reported,
+    LALAE_Reserve_No_Improv = LALAE.NoImprovement.NetCorridorsAndCaps * (EP_To_Date - EP_Undev_Paid),
+    LALAE_Reserve_Half_Improv = LALAE.HalfImprovement.NetCorridorsAndCaps * (EP_To_Date - EP_Undev_Paid),
+    LALAE_Reserve_Break_Even = LALAE.Market.NetCorridorsAndCaps * (EP_To_Date - EP_Undev_Paid),
+    LALAE_IBNR_No_Improv = LALAE.NoImprovement.NetCorridorsAndCaps * (EP_To_Date - EP_Undev_Reported),
+    LALAE_IBNR_Half_Improv = LALAE.HalfImprovement.NetCorridorsAndCaps * (EP_To_Date - EP_Undev_Reported),
+    LALAE_IBNR_Break_Even = LALAE.Market.NetCorridorsAndCaps * (EP_To_Date - EP_Undev_Reported)
+  )
+```
+
+### Final Control of Column Names for Output CSV
+```{r, Ensure Field Names Have Not Changed}
+# Select only the fields needed for the output CSV
+proj.env$MonthlyProjections <- proj.env$MonthlyProjections %>%
+  rename(
+    # Program_Name = Program_Name,
+    # Carrier = Carrier,
+    # Primary_LOB = Primary_LOB,
+    # Secondary_LOB = Secondary_LOB,
+    # Contact.Person. = Contact,
+    # Suffix = Suffix,
+    # Admitted...E.S. = AdmittedAndES,
+    # Reinsurance.Panel. = Panel,
+    # States. = States,
+    # Lookup is concatenated KEY + YM
+    # Key.Limits. = KeyLimits,
+    # ALAE_ULAE_In_Ceded_LR = ULAEorALAE,
+    # Collateral.Terms. = CollateralTerms,
+    Month = MONTH,
+    Carrier.Retention. = CarrierRetention,
+    Policy_Length = Policy_Length,
+    RA_or_LOD = RA_or_LOD,
+    Target_Participation = TargetParticipationPercentage,
+    Target.Participation. = TargetParticipation,
+    IUEPR_Month = IUEPR_Monthly,
+    LLAE.Corridor.Attachment.LR. = LLAECorridorAttachmentLR,
+    LLAE.Corridor.End.LR. = LLAECorridorEndLR,
+    LLAE.Corridor...Retained. = LLAECorridorRetained,
+    Loss.Ratio.Cap. = LossRatioCap,
+    Minimum.Ceding.Commission. = MinimumCedingCommission,
+    Provisional.Ceding.Commission. = ProvisionalCedingCommission,
+    Maximum.Ceding.Commission. = MaximumCedingCommission,
+    Minimum.Ceding.Commission.LLAE.Ratio. = MinimumCedingCommissionLLAERatio,
+    Provisional.Ceding.Commission.LLAE.Ratio. = ProvisionalCedingCommissionLLAERatio,
+    Maximum.Ceding.Commission.LLAE.Ratio. = MaximumCedingCommissionLLAERatio,
+    Est_Payout_Duration_Yrs = Duration.Estimated,
+    Prior_No_Impr_Gross_LALAE_Ratio_Excl_Corr = LALAE.NoImprovement.Gross,
+    Prior_Half_Impr_Gross_LALAE_Ratio_Excl_Corr = LALAE.HalfImprovement.Gross,
+    Industry.Gross.LALAE.Ratio..excluding.corridor..LR.cap..etc... = LALAE.Industry.Gross,
+    LALAE_Ratio_No_Improv = LALAE.NoImprovement.NetCorridorsAndCaps,
+    LALAE_Ratio_Half_Improv = LALAE.HalfImprovement.NetCorridorsAndCaps,
+    LALAE_Ratio_Break_Even = LALAE.Market.NetCorridorsAndCaps,
+    Prior.No.Improvement.Combined.Ratio. = CR.NoImprovement,
+    Prior.Half.Improvement.Combined.Ratio. = CR.HalfImprovement,
+    Industry.Combined.Ratio. = CR.Industry,
+    Breakeven.Check..should.be.100.. = CR.Market,
+  ) %>%
+  select(
+    KEY,
+    Month,
+    Effective_Date,
+    Expiration_Date,
+    Carrier.Retention.,
+    Policy_Length,
+    RA_or_LOD,
+    Total_Subject_Premium,
+    Target_Participation,
+    Target.Participation.,
+    Inherited_UEPR,
+    Reins_Broker_Perc,
+    Expenses_Perc,
+    ULAE_Perc,
+    LLAE.Corridor.Attachment.LR.,
+    LLAE.Corridor.End.LR.,
+    LLAE.Corridor...Retained.,
+    Loss.Ratio.Cap.,
+    Minimum.Ceding.Commission.,
+    Provisional.Ceding.Commission.,
+    Maximum.Ceding.Commission.,
+    Minimum.Ceding.Commission.LLAE.Ratio.,
+    Provisional.Ceding.Commission.LLAE.Ratio.,
+    Maximum.Ceding.Commission.LLAE.Ratio.,
+    WP_Monthly_Data,
+    EP_Monthly_Data,
+    Loss_Paid_Monthly_Data,
+    ALAE_Paid_Monthly_Data,
+    ULAE_Paid_Monthly_Data,
+    Loss_Case_Reserve_Data,
+    ALAE_Case_Reserve_Data,
+    ULAE_Case_Reserve_Data,
+    IUEPR_Total,
+    IUEPR_Perc,
+    IUEPR_Month,
+    WP_Total,
+    WP_Perc,
+    WP_Monthly,
+    EP_Monthly,
+    EP_TransferredToNextTreaty,
+    EP_Monthly_Incl_IUEPR,
+    EP_To_Date,
+    WP_To_Date,
+    UEPR,
+    DUEPR_Balance,
+    EP_Undev_Paid,
+    EP_Undev_Reported,
+    ULAE_Total,
+    Reins_Broker_Comm_Total,
+    Expenses_Total,
+    Est_Payout_Duration_Yrs,
+    Prior_No_Impr_Gross_LALAE_Ratio_Excl_Corr,
+    Prior_Half_Impr_Gross_LALAE_Ratio_Excl_Corr,
+    Industry.Gross.LALAE.Ratio..excluding.corridor..LR.cap..etc...,
+    LALAE_Ratio_No_Improv,
+    LALAE_Ratio_Half_Improv,
+    LALAE_Ratio_Break_Even,
+    Prior.No.Improvement.Combined.Ratio.,
+    Prior.Half.Improvement.Combined.Ratio.,
+    Industry.Combined.Ratio.,
+    Breakeven.Check..should.be.100..,
+    LALAE_Paid_Total_No_Improv,
+    LALAE_Paid_Total_Half_Improv,
+    LALAE_Paid_Total_Break_Even,
+    LALAE_Reported_Total_No_Improv,
+    LALAE_Reported_Total_Half_Improv,
+    LALAE_Reported_Total_Break_Even,
+    LALAE_Reserve_No_Improv,
+    LALAE_Reserve_Half_Improv,
+    LALAE_Reserve_Break_Even,
+    LALAE_IBNR_No_Improv,
+    LALAE_IBNR_Half_Improv,
+    LALAE_IBNR_Break_Even
   )
 ```
 
@@ -814,6 +1163,7 @@ proj.env$file_name <- paste0(
   params$reporting_path,
   proj.env$today, "_",
   format(as.Date(params$date_of_valuation, "%Y-%m-%d"), "%Y%m%d"),
+  ifelse(params$treaty_csv, "_CSV", ""),
   "_VAL_MONTHLY_PROJECTIONS.csv"
 )
 
