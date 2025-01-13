@@ -16,7 +16,7 @@ params:
   date_of_valuation:
     input: date
     label: Date of Valuation
-    value: "2024-09-30"
+    value: "2024-12-31"
   reporting_path:
     input: text
     label: Working directory for the monthly valuation process
@@ -32,7 +32,7 @@ params:
   treaty_positions:
     input: text
     label: "Treaty Positions CSV file"
-    value: ""
+    value: "Treaties.csv"
   provider_server_name:
     input: text
     label: "Provider Server Name"
@@ -56,23 +56,23 @@ params:
   underwriting_lalaes:
     input: text
     label: "Underwriting LALAE CSV file"
-    value: ""
+    value: "UnderwritingLALAEs.csv"
   development_factors:
     input: text
     label: "Development Factors CSV file"
-    value: ""
+    value: "DEVS202412.csv"
   exceptions_extract_dates:
     input: text
     label: "Specific Dates to Use in Source Data"
-    value: ""
+    value: "20241231_20241216_SRCDATES.csv"
   exceptions_bad_reporting_months:
     input: text
     label: "Specific Experience Months to Exclude from Source Data"
-    value: ""
+    value: "20241231_20241216_EXP_DATES_TO_OMIT.csv"
   overrides_table:
     input: text
     label: "Specific Values to Override in Source Data"
-    value: ""
+    value: "20241231_20241216_EXP_OVERRIDES.csv"
   key_map:
     input: text
     label: "Key Translations CSV file"
@@ -367,7 +367,8 @@ proj.env$extract_dates <- read.csv(
   select(-key) %>%
   mutate(
     extract_to_use = convert_excel_date(extract_to_use),
-    nre_feed = as.character(nre_feed)
+    nre_feed = as.character(nre_feed),
+    Reason = as.character(Reason)
   ) %>%
   rename(extract_to_use_reason = Reason)
 
@@ -438,10 +439,11 @@ proj.env$latest_refresh_date <- as.Date(max(proj.env$our_db$v_created))
 
 proj.env$our_db_filtered <- proj.env$our_db %>%
   dplyr::left_join(proj.env$extract_dates, by = c("nre_feed", "treaty_year")) %>%
-  dplyr::left_join(proj.env$experience_to_omit, by = c("nre_feed", "treaty_year")) %>%
+  dplyr::left_join(proj.env$experience_to_omit, by = c("nre_feed", "treaty_year", "bordereaux_month" = "month_to_exclude")) %>%
   dplyr::filter(
     v_created == coalesce(extract_to_use, proj.env$latest_refresh_date),
-    bordereaux_month != coalesce(month_to_exclude, as.Date(format(Sys.Date() + lubridate::period(1, units = "months"), "%Y-%m-01")))
+    bordereaux_month <= params$date_of_valuation,
+    is.na(reason_to_drop),
   )
 ```
 
@@ -687,7 +689,7 @@ proj.env$Total_IUEPR <- proj.env$MonthlyProjections %>%
 
 proj.env$Total_IUEPR_Monthly <- sum(proj.env$MonthlyProjections$IUEPR_Monthly)
 
-if (proj.env$Total_IUEPR != proj.env$Total_IUEPR_Monthly) {
+if (abs(proj.env$Total_IUEPR - proj.env$Total_IUEPR_Monthly) > .01) {
   stop("Total IUEPR and Total IUEPR Monthly are not equal.")
 }
 ```
@@ -723,12 +725,6 @@ proj.env$WP_Proj_vs_Rept <- proj.env$MonthlyProjections %>%
 proj.env$MonthlyProjections <- proj.env$MonthlyProjections %>%
   mutate(
     WP_Monthly = datareplace(WP_Monthly, WP_Monthly_Data),
-    # Amount of Written Premium that will be earned in next treaty (LOD only)
-    WP_ToEarnNextTreaty = ifelse(
-      RA_or_LOD == "LOD",
-      WP_Monthly * (as.numeric(MonthsNewPolicyInforceAfterTreatyEnds, "months") / as.numeric(Policy_Length, "months")),
-      0
-    )
   )
 ```
 

@@ -29,10 +29,23 @@ WITH FixProgramYears AS
         [StatusID] = p.[StatusID],
         [Status] = s.[Name],
         [ProgramID] = p.[ID],
-        [Name] = p.[Name],
+        [Name] = CASE
+            WHEN p.[Name] = 'LP RISK TRISURA' THEN 'LPRISK'
+            WHEN p.[Name] = 'PROGRAM BROKERAGE CORP' THEN 'PBC'
+            WHEN p.[Name] LIKE 'REDSTONE%' THEN 'REDSTONE'
+            WHEN p.[Name] = 'TRADESMAN HAB GL' THEN 'Tradesman HAB'
+            WHEN p.[Name] LIKE 'WHITEHILL%' THEN 'WHITEHILL(SUTTON)'
+            ELSE p.[Name]
+        END,
         [ProgramYearID] = py.[ID],
-        [EffectiveDate] = COALESCE(jr.[EffectiveDate], py.[StartDate]), -- PY Table looks WRONG
-        [ExpirationDate] = COALESCE(jr.[ExpirationDate], py.[EndDate]), -- PY Table looks WRONG
+        [EffectiveDate] = CASE
+            WHEN b.[Name] = 'LOD' THEN MIN(COALESCE(jr.[EffectiveDate], py.[StartDate])) OVER (PARTITION BY p.[ID])
+            ELSE COALESCE(jr.[EffectiveDate], py.[StartDate])
+        END, -- PY Table looks WRONG
+        [ExpirationDate] = CASE
+            WHEN b.[Name] = 'LOD' THEN MAX(COALESCE(jr.[ExpirationDate], py.[EndDate])) OVER (PARTITION BY p.[ID])
+            ELSE COALESCE(jr.[ExpirationDate], py.[EndDate])
+        END, -- PY Table looks WRONG
         [Panel] = jr.[Panel], -- Can we get this added? Is it already available?
         [Carrier] = c.[Name],
         [PrimaryLOB] = COALESCE(jr.[PrimaryLOB], lob.[Name]), -- LOB table looks WRONG
@@ -45,7 +58,8 @@ WITH FixProgramYears AS
         [PolicyLossLimitPDOccurrenceCap] = jr.[PolicyLossLimitPDOccurrenceCap], -- Can we get this added? Is it already available?
         [RAvLOD] = b.[Name], --jr.[RAvLOD],
         [TotalSubjectPremium] = jr.[TotalSubjectPremium], -- py.[TotalGWP], -- PY Table looks WRONG
-        [TargetParticipation] = jr.[TargetParticipation], -- py.[GWP], -- PY Table looks WRONG
+        -- Aggregate Target Premium tracked on two rows, which breaks the summation step later because it is double counted
+        [TargetParticipation] = IIF(p.[ID] = 49, NULL, jr.[TargetParticipation]), -- py.[GWP], -- PY Table looks WRONG
         [TargetParticipationPercentage] = jr.[TargetParticipationPercentage], --py.[GWP] / py.[TotalGWP], -- Issues with prior two columns
         [AssumedPolicyLengthMonths] = py.[ColWPMonths], -- [WPMonths], jr.[AssumedPolicyLengthMonths],
         --[ULAEGWPorGEP], [ULAEFlag], -- Do we need this?
@@ -58,7 +72,10 @@ WITH FixProgramYears AS
         [ALAETreatmentAtActual] = jr.[ALAETreatmentAtActual], --Can we get this added? Is it already available?
         [Admitted] = jr.[Admitted],  -- Can we get this added? Is it already available?
         [ES] = jr.[ES],  -- Can we get this added? Is it already available?
-        [InheritedUEPROutsideParticipation] = jr.[InheritedUEPROutsideParticipation], --Can we get this added? Is it already available?
+        [InheritedUEPROutsideParticipation] = CASE
+            WHEN b.[Name] = 'LOD' THEN FIRST_VALUE(jr.[InheritedUEPROutsideParticipation]) OVER (PARTITION BY p.[ID] ORDER BY COALESCE(jr.[EffectiveDate], py.[StartDate]))
+            ELSE jr.[InheritedUEPROutsideParticipation]
+        END, --Can we get this added? Is it already available?
         [KeyLimits] = jr.[KeyLimits], -- Can we get this added? Is it already available?
         [ULAEorALAE] = jr.[ULAEorALAE], -- Can we get this added? Is it already available?
         [ReinsuranceBrokerCommission] = py.[ReinsBrokPerc], -- jr.[ReinsuranceBrokerCommission], -- Verified to match
@@ -126,20 +143,13 @@ WITH FixProgramYears AS
         -- This one is temporary until all data in this table is available elsewhere
         INNER JOIN [dbo].[JaffaReference] jr ON p.[ID] = jr.[ProgramID] AND py.[ID] = jr.[ProgramYearID] --36
         -- Program 52 does not have an correct key for ProgramYears???
-)
+) -- SELECT * FROM [CleanUpData] ORDER BY [Name], [EffectiveDate]
 SELECT
     [ConcatenatedKey] =
         UPPER(
             FORMATMESSAGE(
                 '%s_%s_%s_%s',
-                CASE
-                    WHEN MAX([Name]) = 'LP RISK TRISURA' THEN 'LPRISK'
-                    WHEN MAX([Name]) = 'PROGRAM BROKERAGE CORP' THEN 'PBC'
-                    WHEN MAX([Name]) LIKE 'REDSTONE%' THEN 'REDSTONE'
-                    WHEN MAX([Name]) = 'TRADESMAN HAB GL' THEN 'TRADESMAN HAB'
-                    WHEN MAX([Name]) LIKE 'WHITEHILL%' THEN 'WHITEHILL(SUTTON)'
-                    ELSE MAX([Name])
-                END,
+                [Name],
                 COALESCE([PrimaryLOB], 'unknown'),
                 CONVERT(nvarchar(6), [EffectiveDate], 112),
                 'A'
@@ -148,7 +158,7 @@ SELECT
     [StatusID] = [StatusID],
     [Status] = [Status],
     [ProgramID] = MAX([ProgramID]),
-    [Name] = MAX([Name]),
+    [Name] = [Name],
     [ProgramYearID] = MAX([ProgramYearID]),
     [EffectiveDate] = [EffectiveDate],
     [ExpirationDate] = [ExpirationDate],
@@ -161,11 +171,11 @@ SELECT
     [PolicyLossLimitAggregateCap] = [PolicyLossLimitAggregateCap],
     [PolicyLossLimitCapClarification] = [PolicyLossLimitCapClarification],
     [PolicyLossLimitOccurrenceCap] = [PolicyLossLimitOccurrenceCap],
-    [PolicyLossLimitPDOccurrenceCap] = [PolicyLossLimitPDOccurrenceCap],
+    [PolicyLossLimitPDOccurrenceCap] = MAX([PolicyLossLimitPDOccurrenceCap]),
     [RAvLOD] = [RAvLOD],
     [TotalSubjectPremium] = SUM([TotalSubjectPremium]),
-    [TargetParticipation] = AVG([TargetParticipation]),
-    [TargetParticipationPercentage] = AVG([TargetParticipation]) / SUM([TotalSubjectPremium]),
+    [TargetParticipation] = SUM([TargetParticipation]),
+    [TargetParticipationPercentage] = SUM([TargetParticipation]) / SUM([TotalSubjectPremium]),
     [AssumedPolicyLengthMonths] = [AssumedPolicyLengthMonths],
     --[ULAEGWPorGEP], [ULAEFlag], -- Do we need this?
     [ULAEOutsideCedingCommission] = MAX([ULAEOutsideCedingCommission]),
@@ -179,7 +189,7 @@ SELECT
     [Admitted] = [Admitted],
     [ES] = [ES],
     [InheritedUEPROutsideParticipation] = [InheritedUEPROutsideParticipation],
-    [KeyLimits] = [KeyLimits],
+    [KeyLimits] = MAX([KeyLimits]),
     [ULAEorALAE] = [ULAEorALAE],
     [ReinsuranceBrokerCommission] = [ReinsuranceBrokerCommission],
     [SeparateExpenses] = MAX([SeparateExpenses]),
@@ -187,8 +197,8 @@ SELECT
     [CollateralTerms] = FORMATMESSAGE('%s Sch. F%s%s UEPR', FORMAT([ScheduleFMultiple], 'P'), CHAR(10), FORMAT([UEPRMultiple], 'P')), -- % of Sch F and UEPR; frequency and arrears
     [ScheduleFMultiple] = [ScheduleFMultiple],
     [UEPRMultiple] = [UEPRMultiple],
-    [CollateralTerms_1] = [CollateralTerms_1],
-    [PostingFrequency] = [PostingFrequency],
+    [CollateralTerms_1] = MAX([CollateralTerms_1]),
+    [PostingFrequency] = MAX([PostingFrequency]),
     [CommissionNotes] = [CommissionNotes],
     [FlatCommission] = IIF(COALESCE([MinimumCedingCommission],0) = COALESCE([ProvisionalCedingCommission],0) AND COALESCE([MinimumCedingCommission],0) = COALESCE([MaximumCedingCommission],0), [MinimumCedingCommission], NULL),
     [MinimumCedingCommission] = [MinimumCedingCommission],
@@ -240,6 +250,7 @@ FROM [CleanUpData]
     AND jr.[Name] IS NULL
 */
 GROUP BY
+    [Name],
     [StatusID],
     [Status],
     [EffectiveDate],
@@ -252,7 +263,6 @@ GROUP BY
     [PolicyLossLimitAggregateCap],
     [PolicyLossLimitCapClarification],
     [PolicyLossLimitOccurrenceCap],
-    [PolicyLossLimitPDOccurrenceCap],
     [RAvLOD],
     [AssumedPolicyLengthMonths],
     [ULAETreatmentInsidevOutside],
@@ -264,13 +274,10 @@ GROUP BY
     [Admitted],
     [ES],
     [InheritedUEPROutsideParticipation],
-    [KeyLimits],
     [ULAEorALAE],
     [ReinsuranceBrokerCommission],
     [ScheduleFMultiple],
     [UEPRMultiple],
-    [CollateralTerms_1],
-    [PostingFrequency],
     [CommissionNotes],
     [MinimumCedingCommission],
     --[MinimumCommission],
