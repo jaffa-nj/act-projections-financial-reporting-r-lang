@@ -251,7 +251,7 @@ EarnedPattern <- function(k, PLEN) {
   # need to convert period back to integer form
   k <- as.numeric(k, "months")
   PLEN <- as.numeric(PLEN, "months")
-  case_when(
+  dplyr::case_when(
     (k >= 1 & k <= PLEN - 1) ~ 1 / PLEN,
     (k == 0 | k == PLEN) ~ 1 / (2 * PLEN),
     TRUE ~ 0
@@ -269,91 +269,19 @@ overrides_table contains confirmed revisions to the monthly submission data reco
 
 ```{r, Load Data}
 # Import data and ensure strings aren't recognized as factors
-if (params$treaty_csv) {
-  # Import data and ensure strings aren't recognized as factors
-  proj.env$treaty_positions <- read.csv(
-    paste(params$reporting_path, params$treaty_positions, sep = ""),
-    stringsAsFactors = FALSE
+proj.env$treaty_positions <- openxlsx::readWorkbook(
+    xlsxFile = paste(params$reporting_path, params$underwriting_master, sep = ""),
+    sheet = "All Treaties"
   ) %>%
-    rename(
-      KEY = ConcatenatedKey,
-    ) %>%
-    mutate(
-      EffectiveDate = convert_excel_date(EffectiveDate),
-      ExpirationDate = convert_excel_date(ExpirationDate),
-      TreatyLength = months_between(EffectiveDate, ExpirationDate),
-      AssumedPolicyLengthMonths = convert_numeric_to_period(AssumedPolicyLengthMonths, "months"),
-    )
-} else {
-  # Establish a connection to the Microsoft SQL Database
-  proj.env$sqlconn <- DBI::dbConnect(odbc::odbc(),
-    Driver = "ODBC Driver 17 for SQL Server",
-    Server = paste0(params$provider_server_name, ",", params$provider_port),
-    Database = params$provider_database_name,
-    UID = params$provider_username,
-    PWD = params$provider_password
+  rename(
+    KEY = ConcatenatedKey
+  ) %>%
+  mutate(
+    EffectiveDate = openxlsx::convertToDate(EffectiveDate),
+    ExpirationDate = openxlsx::convertToDate(ExpirationDate),
+    TreatyLength = months_between(EffectiveDate, ExpirationDate),
+    AssumedPolicyLengthMonths = convert_numeric_to_period(AssumedPolicyLengthMonths, "months"),
   )
-
-  # Query the data from the TreatyTable
-  proj.env$treaty_positions <- DBI::dbGetQuery(proj.env$sqlconn, paste(readLines("TreatyTable.sql"), collapse = "\n")) %>%
-    filter(EffectiveDate <= params$date_of_valuation) %>%
-    rename(
-      KEY = ConcatenatedKey,
-    ) %>%
-    mutate(
-      TreatyLength = months_between(EffectiveDate, ExpirationDate),
-      AssumedPolicyLengthMonths = convert_numeric_to_period(AssumedPolicyLengthMonths, "months"),
-    )
-
-  # Close the database connection
-  DBI::dbDisconnect(proj.env$sqlconn)
-
-  proj.env$underwriting_lalaes <- read.csv(
-    paste(params$reporting_path, params$underwriting_lalaes, sep = ""),
-    stringsAsFactors = FALSE
-  ) %>%
-    select(
-      KEY,
-      Duration.Estimated,
-      LALAE.NoImprovement.Gross,
-      LALAE.HalfImprovement.Gross,
-      LALAE.Market.Gross,
-      LALAE.Industry.Gross,
-      LALAE.NoImprovement.NetCorridorsAndCaps,
-      LALAE.HalfImprovement.NetCorridorsAndCaps,
-      LALAE.Market.NetCorridorsAndCaps,
-      LALAE.Industry.NetCorridorsAndCaps,
-      CR.NoImprovement,
-      CR.HalfImprovement,
-      CR.Market,
-      CR.Industry,
-    )
-
-  # Verify that all keys in the underwriting_lalaes table are present in the treaty_positions table
-  if (any(!proj.env$underwriting_lalaes$KEY %in% proj.env$treaty_positions$KEY)) {
-    proj.env$missing_keys <- unique(proj.env$underwriting_lalaes$KEY[!proj.env$underwriting_lalaes$KEY %in% proj.env$treaty_positions$KEY])
-    warning(paste(
-      "The following keys in the underwriting_lalaes table are not present in the treaty_positions table:\n",
-      paste(proj.env$missing_keys, collapse = "\n")
-    ))
-  }
-
-  if (any(!proj.env$treaty_positions$KEY %in% proj.env$underwriting_lalaes$KEY)) {
-    proj.env$missing_keys <- unique(proj.env$treaty_positions$KEY[!proj.env$treaty_positions$KEY %in% proj.env$underwriting_lalaes$KEY])
-    stop(paste(
-      "The following keys in the treaty_positions table are not present in the underwriting_lalaes table:\n",
-      paste(proj.env$missing_keys, collapse = "\n")
-    ))
-  }
-
-  # Join the underwriting_lalaes table to the treaty_positions table
-  # These are values that our underwriting team is responsible for, and may not be maintained or updated in vendor table in a timely fashion
-  proj.env$treaty_positions <- proj.env$treaty_positions %>%
-    inner_join(
-      proj.env$underwriting_lalaes,
-      by = c("KEY")
-    )
-}
 
 proj.env$development_factors <- read.csv(
   paste(params$reporting_path, params$development_factors, sep = ""),
