@@ -748,7 +748,7 @@ proj.env$MonthlyProjections <- expand.grid(
   MONTH = proj.env$date_vector
 ) %>%
   inner_join(proj.env$treaty_positions, by = c("KEY")) %>%
-  filter(MONTH >= EffectiveDate %m-% months(1)) %>%
+  filter(MONTH >= lubridate::floor_date(EffectiveDate, "month") %m-% months(1)) %>%
   left_join(
     (
       proj.env$vel_df3 %>%
