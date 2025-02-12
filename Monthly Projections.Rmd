@@ -428,7 +428,8 @@ if (nrow(proj.env$duplicates) > 0) {
     paste(
       proj.env$duplicates$nre_feed,
       proj.env$duplicates$treaty_year,
-      collapse = "\n")
+      collapse = "\n"
+    )
   ))
 }
 
@@ -457,7 +458,8 @@ if (nrow(proj.env$duplicates) > 0) {
       proj.env$duplicates$nre_feed,
       proj.env$duplicates$treaty_year,
       proj.env$duplicates$month_to_exclude,
-      collapse = "\n")
+      collapse = "\n"
+    )
   ))
 }
 
@@ -486,7 +488,8 @@ if (nrow(proj.env$duplicates) > 0) {
       proj.env$duplicates$nre_feed,
       proj.env$duplicates$treaty_year,
       proj.env$duplicates$bordereaux_month,
-      collapse = "\n")
+      collapse = "\n"
+    )
   ))
 }
 ```
@@ -527,7 +530,8 @@ if (nrow(proj.env$duplicates) > 0) {
       proj.env$duplicates$treaty_year,
       proj.env$duplicates$bordereaux_month,
       proj.env$duplicates$v_created,
-      collapse = "\n")
+      collapse = "\n"
+    )
   ))
 }
 ```
@@ -580,7 +584,7 @@ proj.env$missing_rows <- anti_join(
 proj.env$missing_rows_with_reason <- proj.env$missing_rows %>%
   left_join(proj.env$extract_dates, by = c("nre_feed", "treaty_year")) %>%
   left_join(
-    proj.env$experience_to_omit, 
+    proj.env$experience_to_omit,
     by = c("nre_feed", "treaty_year", "bordereaux_month" = "month_to_exclude")
   ) %>%
   mutate(
