@@ -28,7 +28,7 @@ params:
   treaty_csv:
     input: checkbox
     label: Read Treaty Positions from CSV instead of Provider DB
-    value: false
+    value: true
   treaty_positions:
     input: text
     label: "Treaty Positions CSV file"
@@ -110,7 +110,7 @@ proj.env$time_begin <- Sys.time()
 
 ### Assumptions
 
-Treaty periods are duration of attached liability from effective date through expiration date (e.g. in WrittenPattern function).
+Treaty periods are duration of attached liability from effective date through expiration date (e.g. in PercentOfCoverageInPeriod function).
 
 (However, policy length values are defined per treaty in "TREATIES\$Policy.Length".)
 
@@ -141,7 +141,7 @@ months_between <- function(startDate, endDate) {
   if (length(startDate) != length(endDate)) stop("Length of startDate and endDate must be the same.")
 
   num_months <- mapply(function(s, e) {
-    if (lubridate::day(s) == 1 && lubridate::day(e) == lubridate::day(lubridate::ceiling_date(e, "month") - 1)) {
+    if (lubridate::day(s) == lubridate::day(e + 1)) {
       e <- e + lubridate::days(1)
     }
     lubridate::interval(s, e) %/% months(1)
@@ -228,18 +228,33 @@ Inherited_UEPR_Pattern <- function(EFF, CAL, PLEN) {
   # 1-(k+0.5)/PLEN yields the portion of the overall length yet to pass (Parallelogram horizontal distance)
 }
 
-# Define a function used for projecting monthly written premium
-# Calculates the expected fraction of written premium in a given month by checking if that month
-# is between the effective date and the expiration date
-# EFF = The effective date of the policy, assumed to be the first of the month
-# CAL = The calendar month for which we are calculating the expected written premium, assumed to be the first of the month
-# TLEN = The length of the treaty in months
-# Returns 1/TLEN if the month is within the treaty period, 0 otherwise
-WrittenPattern <- function(EFF, CAL, TLEN) {
-  treaty_month <- as.numeric(months_between(EFF, CAL), "months")
-  # need to convert period back to integer form
-  TLEN <- as.numeric(TLEN, "months")
-  dplyr::if_else(treaty_month >= 0 & treaty_month < TLEN, 1 / TLEN, 0)
+# Define a function to get the proportion of coverage in a calendar month relative to the total coverage period
+PercentOfCoverageInPeriod <- function(EFF, XPRY, CAL) {
+  # EFF: Effective Date of the Treaty
+  # XPRY: Expiration Date of the Treaty
+  # CAL: Calendar Month
+  # Returns the percentage of the treaty period that has elapsed
+  # If the calendar month is before the effective date, return 0
+  # If the calendar month is after the expiration date, return 0
+  # Otherwise, return the percentage of time in current month of the total treaty period
+  if (length(EFF) != length(XPRY) | length(EFF) != length(CAL)) {
+    stop("Lengths of EFF, XPRY, and CAL must be the same.")
+  }
+
+  if (length(EFF) > 1) {
+    y <- mapply(PercentOfCoverageInPeriod, EFF, XPRY, CAL)
+  } else {
+    bom <- lubridate::floor_date(CAL, "month")
+    eom <- lubridate::ceiling_date(CAL, "month")
+    if ((XPRY < bom) | (EFF > eom)) {
+      y <- 0
+    } else {
+      start <- max(EFF, CAL)
+      end <- min(eom, XPRY)
+      y <- as.numeric(end - start) / as.numeric(XPRY - EFF)
+    }
+  }
+  return(y)
 }
 
 # Define a function used for used for projecting monthly earned premium
@@ -251,7 +266,7 @@ EarnedPattern <- function(k, PLEN) {
   # need to convert period back to integer form
   k <- as.numeric(k, "months")
   PLEN <- as.numeric(PLEN, "months")
-  case_when(
+  dplyr::case_when(
     (k >= 1 & k <= PLEN - 1) ~ 1 / PLEN,
     (k == 0 | k == PLEN) ~ 1 / (2 * PLEN),
     TRUE ~ 0
@@ -355,10 +370,38 @@ if (params$treaty_csv) {
     )
 }
 
+# Check that there is only one row per KEY in the treaty_positions table
+proj.env$duplicates <- proj.env$treaty_positions %>%
+  group_by(KEY) %>%
+  filter(n() > 1) %>%
+  pull(KEY) %>%
+  unique()
+
+if (length(proj.env$duplicates) > 0) {
+  stop(paste(
+    "The following keys have more than one row in the treaty_positions table:\n",
+    paste(proj.env$duplicates, collapse = "\n")
+  ))
+}
+
 proj.env$development_factors <- read.csv(
   paste(params$reporting_path, params$development_factors, sep = ""),
   stringsAsFactors = FALSE
 )
+
+# Check that there is only one row per grouping of fields "KEY" and "LAG_ACCMONTH" in proj.env$development_factors
+proj.env$duplicates <- proj.env$development_factors %>%
+  group_by(KEY, LAG_ACCMONTH) %>%
+  filter(n() > 1) %>%
+  pull(KEY, LAG_ACCMONTH) %>%
+  unique()
+
+if (length(proj.env$duplicates) > 0) {
+  stop(paste(
+    "The following keys have more than one row in the development_factors table:\n",
+    paste(proj.env$duplicates, collapse = "\n")
+  ))
+}
 
 proj.env$extract_dates <- read.csv(
   paste(params$reporting_path, params$exceptions_extract_dates, sep = ""),
@@ -372,6 +415,24 @@ proj.env$extract_dates <- read.csv(
   ) %>%
   rename(extract_to_use_reason = Reason)
 
+# Check that there is only one row per grouping of fields "nre_feed" and "treaty_year" in proj.env$extract_dates
+proj.env$duplicates <- proj.env$extract_dates %>%
+  group_by(nre_feed, treaty_year) %>%
+  filter(n() > 1) %>%
+  select(nre_feed, treaty_year) %>%
+  unique()
+
+if (nrow(proj.env$duplicates) > 0) {
+  stop(paste(
+    "The following nre_feed and treaty_year combinations have more than one row in the extract_dates table:\n",
+    paste(
+      proj.env$duplicates$nre_feed,
+      proj.env$duplicates$treaty_year,
+      collapse = "\n"
+    )
+  ))
+}
+
 proj.env$experience_to_omit <- read.csv(
   paste(params$reporting_path, params$exceptions_bad_reporting_months, sep = ""),
   stringsAsFactors = FALSE
@@ -383,6 +444,25 @@ proj.env$experience_to_omit <- read.csv(
   ) %>%
   rename(reason_to_drop = Reason)
 
+# Check that there is only one row per grouping of fields "nre_feed", "treaty_year", and "month_to_exclude" in proj.env$experience_to_omit
+proj.env$duplicates <- proj.env$experience_to_omit %>%
+  group_by(nre_feed, treaty_year, month_to_exclude) %>%
+  filter(n() > 1) %>%
+  select(nre_feed, treaty_year, month_to_exclude) %>%
+  unique()
+
+if (nrow(proj.env$duplicates) > 0) {
+  stop(paste(
+    "The following nre_feed, treaty_year, and month_to_exclude combinations have more than one row in the experience_to_omit table:\n",
+    paste(
+      proj.env$duplicates$nre_feed,
+      proj.env$duplicates$treaty_year,
+      proj.env$duplicates$month_to_exclude,
+      collapse = "\n"
+    )
+  ))
+}
+
 proj.env$overrides_table <- read.csv(
   paste(params$reporting_path, params$overrides_table, sep = ""),
   stringsAsFactors = FALSE
@@ -393,6 +473,25 @@ proj.env$overrides_table <- read.csv(
   ) %>%
   select(-key) %>%
   rename(reason_to_override = Reason)
+
+# Check that there is only one row per grouping of fields "nre_feed", "treaty_year", and "bordereaux_month" in proj.env$overrides_table
+proj.env$duplicates <- proj.env$overrides_table %>%
+  group_by(nre_feed, treaty_year, bordereaux_month) %>%
+  filter(n() > 1) %>%
+  select(nre_feed, treaty_year, bordereaux_month) %>%
+  unique()
+
+if (nrow(proj.env$duplicates) > 0) {
+  stop(paste(
+    "The following nre_feed, treaty_year, and bordereaux_month combinations have more than one row in the overrides_table table:\n",
+    paste(
+      proj.env$duplicates$nre_feed,
+      proj.env$duplicates$treaty_year,
+      proj.env$duplicates$bordereaux_month,
+      collapse = "\n"
+    )
+  ))
+}
 ```
 
 ### Load latest query of data and merge with the Exception Table
@@ -415,17 +514,37 @@ proj.env$our_db <- DBI::dbReadTable(
   )
 
 DBI::dbDisconnect(proj.env$con)
+
+# Check that there is only one row per grouping of fields "nre_feed", "treaty_year", "bordereaux_month", and "v_created" in proj.env$our_db
+proj.env$duplicates <- proj.env$our_db %>%
+  group_by(nre_feed, treaty_year, bordereaux_month, v_created) %>%
+  filter(n() > 1) %>%
+  select(nre_feed, treaty_year, bordereaux_month, v_created) %>%
+  unique()
+
+if (nrow(proj.env$duplicates) > 0) {
+  warning(paste(
+    "The following nre_feed, treaty_year, bordereaux_month, and v_created combinations have more than one row in the our_db table:\n",
+    paste(
+      proj.env$duplicates$nre_feed,
+      proj.env$duplicates$treaty_year,
+      proj.env$duplicates$bordereaux_month,
+      proj.env$duplicates$v_created,
+      collapse = "\n"
+    )
+  ))
+}
 ```
 
 Validate the data by checking for missing values in the key columns.
 
 ```{r, Check Overrides have matching keys}
 # Check that all keys in the overrides table are present in the data
-if (any(!proj.env$extract_dates$nre_feed %in% proj.env$our_db$nre_feed & !proj.env$extract_dates$treaty_year %in% proj.env$our_db$treaty_year)) {
+if (any(!proj.env$extract_dates$nre_feed %in% proj.env$our_db$nre_feed | !proj.env$extract_dates$treaty_year %in% proj.env$our_db$treaty_year)) {
   stop("Keys in the extract_dates table are not present in the data.")
 }
 
-if (any(!proj.env$experience_to_omit$nre_feed %in% proj.env$our_db$nre_feed & !proj.env$experience_to_omit$treaty_year %in% proj.env$our_db$treaty_year)) {
+if (any(!proj.env$experience_to_omit$nre_feed %in% proj.env$our_db$nre_feed | !proj.env$experience_to_omit$treaty_year %in% proj.env$our_db$treaty_year)) {
   stop("Keys in the experience_to_omit table are not present in the data.")
 }
 ```
@@ -464,7 +583,10 @@ proj.env$missing_rows <- anti_join(
 # Check if the missing rows have a reason in the extract_dates or experience_to_omit tables
 proj.env$missing_rows_with_reason <- proj.env$missing_rows %>%
   left_join(proj.env$extract_dates, by = c("nre_feed", "treaty_year")) %>%
-  left_join(proj.env$experience_to_omit, by = c("nre_feed", "treaty_year")) %>%
+  left_join(
+    proj.env$experience_to_omit,
+    by = c("nre_feed", "treaty_year", "bordereaux_month" = "month_to_exclude")
+  ) %>%
   mutate(
     reason = coalesce(extract_to_use_reason, reason_to_drop)
   ) %>%
@@ -630,7 +752,7 @@ proj.env$MonthlyProjections <- expand.grid(
   MONTH = proj.env$date_vector
 ) %>%
   inner_join(proj.env$treaty_positions, by = c("KEY")) %>%
-  filter(MONTH >= EffectiveDate %m-% months(1)) %>%
+  filter(MONTH >= lubridate::floor_date(EffectiveDate, "month") %m-% months(1)) %>%
   left_join(
     (
       proj.env$vel_df3 %>%
@@ -707,23 +829,15 @@ proj.env$MonthlyProjections <- proj.env$MonthlyProjections %>%
     # Our QS (quota share) of the Estimated Total Written Premium
     WP_Total = Total_Subject_Premium * TargetParticipationPercentage,
     # Allocate 1/n for all months during the treaty period (where n is the number of months the treaty is effective for), 0 otherwise
-    WP_Perc = WrittenPattern(Effective_Date, MONTH, TreatyLength),
+    WP_Perc = PercentOfCoverageInPeriod(Effective_Date, Expiration_Date, MONTH),
     # Project monthly written participation
     WP_Monthly = WP_Total * WP_Perc,
   )
 
-# Record the total difference between projected written premiums and those that were reported
-# (this isolated step can be consolidated if there's no problem with adding an extra WP_Proj
-# column to retain the original projected values)
-proj.env$WP_Proj_vs_Rept <- proj.env$MonthlyProjections %>%
-  dplyr::filter(!is.na(WP_Monthly_Data)) %>%
-  mutate(WP_Proj_vs_Rept = WP_Monthly - WP_Monthly_Data) %>%
-  summarize(WP_Proj_vs_Rept_Total = sum(WP_Proj_vs_Rept)) %>%
-  pull(WP_Proj_vs_Rept_Total)
-
 # Replace projected data with actual data where available
 proj.env$MonthlyProjections <- proj.env$MonthlyProjections %>%
   mutate(
+    WP_Proj_vs_Rept = tidyr::replace_na(tidyr::replace_na(WP_Monthly, 0) - WP_Monthly_Data, 0),
     WP_Monthly = datareplace(WP_Monthly, WP_Monthly_Data),
   )
 ```
@@ -734,17 +848,22 @@ The following is a check to ensure the originally anticipated WP participation (
 # Sum of anticipated treaty WP participations
 proj.env$Total_WP_Participation <- proj.env$MonthlyProjections %>%
   distinct(KEY, .keep_all = TRUE) %>%
-  summarize(Total_WP_Participation = sum(WP_Total)) %>%
-  pull(Total_WP_Participation)
+  select(KEY, WP_Total)
 
-# WP_Monthly contains projected monthly WP and, where available, reported WP
-# Therefore, we sum the revised WP_Monthly column and add the monthly discrepancies between
-# projected and actual reported values.
-proj.env$Total_WP_Monthly <- sum(proj.env$MonthlyProjections$WP_Monthly) + proj.env$WP_Proj_vs_Rept
+proj.env$Total_WP_Monthly <- proj.env$MonthlyProjections %>%
+  group_by(KEY) %>%
+  summarize(WP_Monthly_Sum = sum(WP_Monthly) + sum(WP_Proj_vs_Rept))
 
-# Throw an error if the two amounts are not equal
-if (abs(proj.env$Total_WP_Participation - proj.env$Total_WP_Monthly) > 0.01) {
-  stop("Total WP Participation and Total WP Monthly are not equal.")
+proj.env$WP_Check <- proj.env$Total_WP_Participation %>%
+  left_join(proj.env$Total_WP_Monthly, by = "KEY") %>%
+  mutate(Difference = abs(WP_Total - WP_Monthly_Sum)) %>%
+  filter(Difference > 0.01)
+
+if (nrow(proj.env$WP_Check) > 0) {
+  stop(paste(
+    "The following keys have discrepancies between WP_Total and WP_Monthly_Sum:\n",
+    paste(proj.env$WP_Check$KEY, collapse = "\n")
+  ))
 }
 ```
 
